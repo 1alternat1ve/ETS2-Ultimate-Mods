@@ -1,0 +1,2740 @@
+import os
+import sys
+import json
+import ctypes
+import shutil
+import threading
+import winreg
+import webbrowser
+import string
+import time
+import subprocess
+import zipfile
+import logging
+import traceback
+import tempfile
+import urllib.request
+import re
+import random
+from pathlib import Path
+from datetime import datetime
+from ctypes import wintypes
+from typing import List, Dict, Optional
+
+import customtkinter as ctk
+from tkinter import messagebox, filedialog
+
+try:
+    import requests
+    import py7zr
+except ImportError:
+    import tkinter.messagebox as mb
+    mb.showerror("Критическая ошибка", "Не установлены необходимые библиотеки (requests, py7zr).\n\nВыполните в консоли:\npip install requests py7zr")
+    sys.exit(1)
+
+# ==========================================
+# --- КОНФИГУРАЦИЯ ПРОГРАММЫ (CORE) ---
+# ==========================================
+class AppConfig:
+    PROGRAM_VERSION = "1.0" # Обновленная версия с расширенным UX и новыми функциями
+    PROGRAM_REPO = "1alternat1ve/ETS2-Ultimate-Mods" 
+    
+    REQUIRED_VERSION = "1.58.1.4"
+    STEAM_APP_ID = "227300"
+    MAX_BACKUPS = 7
+    MIN_DISK_SPACE_GB = 5
+    MAX_BACKUP_FOLDER_SIZE_GB = 5.0 
+    GITHUB_API_URL = "https://api.github.com/repos/1alternat1ve/ETS2-Ultimate-Mods/releases/latest"
+    
+    # Резервные прямые ссылки на случай исчерпания лимитов API GitHub
+    FALLBACK_DECRYPT_URL = "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/latest/SII_Decrypt.exe"
+    
+    REQUIRED_DLCS = {
+        "dlc_east.scs": "Going East!",
+        "dlc_north.scs": "Scandinavia",
+        "dlc_fr.scs": "Vive la France !",
+        "dlc_it.scs": "Italia",
+        "dlc_balt.scs": "Beyond the Baltic Sea",
+        "dlc_balkan_e.scs": "Road to the Black Sea",
+        "dlc_iberia.scs": "Iberia"
+    }
+    
+    if "__compiled__" in globals() or getattr(sys, 'frozen', False):
+        BASE_DIR = Path(os.path.abspath(sys.argv[0])).parent
+    else:
+        BASE_DIR = Path(os.path.abspath(__file__)).parent
+
+    TEMP_SYNC_DIR = BASE_DIR / "temp_sync"
+    SETTINGS_FILE = BASE_DIR / "settings.json"
+    CRASH_LOG_FILE = BASE_DIR / "crash_log.txt"
+
+# ==========================================
+# --- КОНФИГУРАЦИЯ ДИЗАЙНА (UX/UI REVOLUTION) ---
+# ==========================================
+class UIConfig:
+    FONT_MAIN = ("Segoe UI", 14)
+    FONT_BOLD = ("Segoe UI", 14, "bold")
+    FONT_TITLE = ("Segoe UI Black", 24)
+    FONT_HERO = ("Segoe UI Black", 42)
+    FONT_LOG = ("Consolas", 13) # Фиксированный шрифт для логов и путей
+    FONT_HINT = ("Segoe UI", 12, "italic")
+    
+    CORNER_RADIUS_CARD = 15
+    CORNER_RADIUS_BTN = 12
+    
+    # Слегка углубленные цвета для лучшего контраста (Минимализм)
+    COLOR_BG = ("#F4F6F8", "#05070A")
+    COLOR_SIDEBAR_BG = ("#FFFFFF", "#0D1117")
+    COLOR_STATUS_BG = ("#E2E8F0", "#090C10")
+    
+    COLOR_CARD_BG = ("#FFFFFF", "#161B22")
+    COLOR_CARD_BG_ALT = ("#F8FAFC", "#21262D")
+    COLOR_PRO_BG = ("#EEF2FF", "#1F2937")
+    
+    COLOR_TEXT_MAIN = ("#111827", "#E6EDF3")
+    COLOR_TEXT_MUTED = ("#6B7280", "#8B949E")
+    
+    COLOR_ACCENT = ("#2563EB", "#3B82F6")
+    COLOR_ACCENT_HOVER = ("#1D4ED8", "#2563EB")
+    
+    COLOR_SUCCESS = ("#059669", "#2EA043") 
+    COLOR_SUCCESS_HOVER = ("#047857", "#238636")
+    
+    COLOR_DANGER = ("#DC2626", "#DA3633") 
+    COLOR_DANGER_HOVER = ("#B91C1C", "#B62324")
+    
+    COLOR_WARNING = ("#D97706", "#D29922")
+    
+    COLOR_PURPLE = ("#7C3AED", "#8957E5")
+    COLOR_PURPLE_HOVER = ("#6D28D9", "#7948C9")
+    
+    COLOR_INFO_BG = ("#EFF6FF", "#1F2937")
+    COLOR_INFO_TEXT = ("#1D4ED8", "#58A6FF")
+    
+    COLOR_BTN_GRAY = ("#E5E7EB", "#21262D")
+    COLOR_BTN_GRAY_HOVER = ("#D1D5DB", "#30363D")
+    
+    COLOR_LOG_BG = ("#FAFAFA", "#010409") 
+
+    TIPS = [
+        "💡 Совет: Всегда продавайте модифицированные грузовики перед удалением мода на них.",
+        "💡 Совет: Используйте 'Безопасный режим', если игра стала вылетать после обновления Windows.",
+        "💡 Совет: В разделе 'Инструменты' можно восстановить профиль из автоматического бэкапа.",
+        "💡 Совет: Включите 'Свободную камеру' в настройках графики, чтобы летать по карте (клавиша 0).",
+        "💡 Совет: В версии игры 1.50+ используйте сглаживание TAA в настройках для избавления от 'лесенок'.",
+        "💡 Совет: Для ручного редактирования сохранений временно отключайте Steam Cloud в игре.",
+        "💡 Совет: Всегда делайте резервную копию профиля перед мажорным обновлением версии ETS2.",
+        "💡 Совет: Для игры в режиме 'Конвой' (Convoy) порядок модов должен строго совпадать у всех игроков.",
+        "🛡️ Совет: Если программа не может сохранить профиль, добавьте папку программы в исключения антивируса.",
+        "🛡️ Внимание: Если дешифратор удаляется, это делает ваш антивирус (False Positive).",
+        "🔥 PRO-Совет: Зависла игра при первой загрузке карты ProMods? Не закрывайте! Движок генерирует кэш навигации (до 15 минут).",
+        "🔥 PRO-Совет: Регулярно очищайте папку скриншотов и дампы через раздел Оптимизации.",
+        "⚠️ Внимание: Локальные сохранения всегда находятся по пути Documents\\Euro Truck Simulator 2\\profiles."
+    ]
+
+# ==========================================
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ЛОГИРОВАНИЕ ---
+# ==========================================
+def setup_logging():
+    logging.basicConfig(
+        filename=AppConfig.CRASH_LOG_FILE,
+        level=logging.ERROR,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        encoding='utf-8'
+    )
+
+def log_error(context_msg: str, exc: Exception):
+    logging.error(f"{context_msg} | Ошибка: {str(exc)}\n{traceback.format_exc()}")
+
+def is_admin() -> bool:
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+def hex_to_nickname(hex_str: str) -> str:
+    try:
+        return bytes.fromhex(hex_str).decode('utf-8')
+    except ValueError:
+        return hex_str
+
+def get_my_documents() -> Path:
+    CSIDL_PERSONAL = 5
+    buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+    ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, 0, buf)
+    return Path(buf.value)
+
+def get_profiles_dir() -> Path:
+    return get_my_documents() / "Euro Truck Simulator 2" / "profiles"
+
+def is_onedrive_path(path: Path) -> bool:
+    return "onedrive" in str(path).lower()
+
+def read_sii_safe(file_path: Path) -> List[str]:
+    encodings = ['utf-8-sig', 'utf-8', 'cp1252', 'cp1251', 'latin-1']
+    for enc in encodings:
+        try:
+            with open(file_path, 'r', encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+        except OSError:
+            break
+    return []
+
+def get_game_version(exe_path: Path) -> Optional[str]:
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(str(exe_path), None)
+        if not size: return None
+        res = ctypes.create_string_buffer(size)
+        ctypes.windll.version.GetFileVersionInfoW(str(exe_path), None, size, res)
+        rffi = ctypes.c_void_p()
+        vsize = ctypes.c_uint()
+        ctypes.windll.version.VerQueryValueW(res, "\\", ctypes.byref(rffi), ctypes.byref(vsize))
+        
+        class VS_FIXEDFILEINFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSignature", ctypes.c_uint32), ("dwStrucVersion", ctypes.c_uint32),
+                ("dwFileVersionMS", ctypes.c_uint32), ("dwFileVersionLS", ctypes.c_uint32)
+            ]
+        info = VS_FIXEDFILEINFO.from_address(rffi.value)
+        return f"{info.dwFileVersionMS >> 16}.{info.dwFileVersionMS & 0xFFFF}.{info.dwFileVersionLS >> 16}.{info.dwFileVersionLS & 0xFFFF}"
+    except Exception as e:
+        log_error("get_game_version", e)
+        return None
+
+def run_hidden_process(command: List[str]):
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    return subprocess.run(command, creationflags=creationflags, capture_output=True, text=True)
+
+def is_game_running() -> bool:
+    try:
+        hwnd = ctypes.windll.user32.FindWindowW("prism3d", None)
+        return bool(hwnd)
+    except Exception:
+        return False
+
+def is_steam_running() -> bool:
+    try:
+        output = subprocess.check_output('tasklist', creationflags=subprocess.CREATE_NO_WINDOW).decode('cp866', 'ignore')
+        return "steam.exe" in output.lower()
+    except Exception:
+        return True 
+
+def parse_version(v_string: str) -> tuple:
+    clean_v = v_string.lower().replace('v', '').strip()
+    try:
+        return tuple(map(int, clean_v.split('.')))
+    except Exception:
+        return (0, 0, 0)
+
+# ==========================================
+# --- ГЛАВНЫЙ КЛАСС ПРИЛОЖЕНИЯ ---
+# ==========================================
+class ETS2Manager(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title(f"ETS2 Nexus | Mod & Profile Manager Pro | v{AppConfig.PROGRAM_VERSION}")
+        self.geometry("1150x850")
+        self.minsize(1050, 750)
+        
+        self.after(0, lambda: self.state('zoomed'))
+        
+        self.exe_icon_path = ctk.StringVar(value="")
+        self.force_quit_btn = None 
+        
+        self.load_settings()
+        self.apply_theme()
+        
+        self.verify_environment()
+        
+        self.game_path = self.get_steam_game_path()
+        self.selected_profile_sii: Optional[Path] = None
+        self.mode = None
+        self.sync_stats = {'total': 0, 'current': 0, 'installed': 0, 'updated': 0, 'errors': 0, 'skipped': 0}
+        
+        self.status_text = ctk.StringVar(value="🚀 Система готова. Ожидание действий.")
+        
+        self.setup_ui()
+        self.show_home()
+        self.check_first_launch()
+        self._update_process_status() 
+        self._check_network_health()
+        
+        self.check_program_updates(silent=True)
+
+    def check_first_launch(self):
+        if self.settings.get("first_launch", True):
+            doc_path = get_my_documents()
+            onedrive_warning = ""
+            if is_onedrive_path(doc_path):
+                onedrive_warning = "\n\n⚠️ ВАЖНО: Обнаружена синхронизация OneDrive! Строго рекомендуется отключить её для папки 'Документы', иначе возможны сбои сохранений."
+
+            msg = (
+                f"Добро пожаловать в ETS2 Nexus PRO (v{AppConfig.PROGRAM_VERSION})!\n\n"
+                "💡 Рекомендации для старта:\n"
+                "• Нажмите «🔰 Быстрый старт» на главном экране для пошаговой установки.\n"
+                "• Локальные профили сохраняются строго по пути 'Documents\\Euro Truck Simulator 2\\profiles'.\n\n"
+                "Ваша игра под надежной защитой: программа автоматически создает резервные копии."
+                f"{onedrive_warning}"
+            )
+            self.after(500, lambda: messagebox.showinfo("Приветствие", msg))
+            self.settings["first_launch"] = False
+            self.save_settings()
+
+    def verify_environment(self):
+        AppConfig.TEMP_SYNC_DIR.mkdir(parents=True, exist_ok=True)
+        get_profiles_dir().mkdir(parents=True, exist_ok=True)
+
+    def load_settings(self):
+        self.settings = {
+            "appearance": "Dark",
+            "color_theme": "blue",
+            "launch_args": "-nointro -unlimitedlog",
+            "first_launch": True,
+            "direct_unpack_mode": False
+        }
+        if AppConfig.SETTINGS_FILE.exists():
+            try:
+                with open(AppConfig.SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    self.settings.update(json.load(f))
+            except Exception as e:
+                log_error("load_settings", e)
+
+    def save_settings(self):
+        try:
+            with open(AppConfig.SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, indent=4)
+        except Exception as e:
+            log_error("save_settings", e)
+
+    def apply_theme(self):
+        ctk.set_appearance_mode(self.settings["appearance"])
+        ctk.set_default_color_theme(self.settings["color_theme"])
+
+    def toggle_theme_switch(self):
+        if self.theme_switch.get():
+            ctk.set_appearance_mode("Dark")
+            self.settings["appearance"] = "Dark"
+            self.theme_switch.configure(text="🌙 Темная тема")
+        else:
+            ctk.set_appearance_mode("Light")
+            self.settings["appearance"] = "Light"
+            self.theme_switch.configure(text="☀️ Светлая тема")
+        self.save_settings()
+
+    # ==========================================
+    # --- СИСТЕМА АВТООБНОВЛЕНИЙ ---
+    # ==========================================
+    def check_program_updates(self, silent=False):
+        if not silent:
+            self.set_status("Проверка обновлений...")
+        threading.Thread(target=self._update_worker, args=(silent,), daemon=True).start()
+
+    def _update_worker(self, silent):
+        try:
+            url = f"https://api.github.com/repos/{AppConfig.PROGRAM_REPO}/releases/latest"
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            latest_version_str = data.get('tag_name', 'v0.0.0')
+            latest_version = parse_version(latest_version_str)
+            current_version = parse_version(AppConfig.PROGRAM_VERSION)
+
+            if latest_version > current_version:
+                release_notes = data.get('body', 'Нет описания изменений.')
+                download_url = None
+                
+                for asset in data.get('assets', []):
+                    if asset['name'].endswith('.exe'):
+                        download_url = asset['browser_download_url']
+                        break
+                
+                if download_url:
+                    self.after(0, lambda: self.prompt_program_update(latest_version_str, release_notes, download_url))
+                else:
+                    if not silent:
+                        self.after(0, lambda: messagebox.showinfo("Обновление найдено", f"Доступна версия {latest_version_str}, но EXE файл не найден в релизе.\nПеренаправляю на GitHub."))
+                        self.after(0, lambda: webbrowser.open(data.get('html_url')))
+            else:
+                if not silent:
+                    self.after(0, lambda: messagebox.showinfo("Обновлений нет", f"У вас установлена самая актуальная версия программы (v{AppConfig.PROGRAM_VERSION})."))
+                self.after(0, lambda: self.set_status("Система готова"))
+        except Exception as e:
+            log_error("check_program_updates", e)
+            if not silent:
+                self.after(0, lambda: messagebox.showerror("Ошибка сети", f"Не удалось проверить обновления: {e}"))
+            self.after(0, lambda: self.set_status("Сбой проверки обновлений"))
+
+    def prompt_program_update(self, new_version, notes, download_url):
+        msg = f"Доступна новая версия программы: {new_version}!\n\nЧто нового:\n{notes[:300]}{'...' if len(notes) > 300 else ''}\n\nОбновить сейчас? Программа будет перезапущена."
+        if messagebox.askyesno("Доступно обновление!", msg):
+            self.set_status("Скачивание обновления...")
+            threading.Thread(target=self.perform_auto_update, args=(download_url,), daemon=True).start()
+
+    def perform_auto_update(self, download_url):
+        is_compiled = "__compiled__" in globals() or getattr(sys, 'frozen', False)
+        if not is_compiled:
+            self.after(0, lambda: messagebox.showinfo("Режим разработчика", "Автообновление работает только в скомпилированном EXE файле.\nПожалуйста, скачайте обновление вручную с GitHub."))
+            self.after(0, lambda: webbrowser.open(f"https://github.com/{AppConfig.PROGRAM_REPO}/releases/latest"))
+            return
+
+        try:
+            current_exe = Path(sys.executable)
+            update_exe = current_exe.parent / f"update_new_{random.randint(1000,9999)}.exe"
+            bat_path = current_exe.parent / "updater.bat"
+
+            with requests.get(download_url, stream=True) as r:
+                r.raise_for_status()
+                with open(update_exe, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk: f.write(chunk)
+
+            bat_content = f"""@echo off
+title ETS2 Nexus Updater
+echo Обновление программы... Пожалуйста, подождите.
+timeout /t 3 /nobreak > NUL
+del "{current_exe.name}"
+ren "{update_exe.name}" "{current_exe.name}"
+start "" "{current_exe.name}"
+del "%~f0"
+"""
+            with open(bat_path, "w", encoding="cp866") as f:
+                f.write(bat_content)
+
+            subprocess.Popen([str(bat_path)], creationflags=subprocess.CREATE_NO_WINDOW)
+            self.after(0, self.destroy)
+            
+        except Exception as e:
+            log_error("perform_auto_update", e)
+            self.after(0, lambda: messagebox.showerror("Ошибка обновления", f"Сбой при скачивании или замене файла: {e}"))
+            self.after(0, lambda: self.set_status("Сбой автообновления"))
+
+    # ==========================================
+    # --- UI HELPERS (UX/UI Дизайн) ---
+    # ==========================================
+    def show_empty_state(self, parent, icon: str, title: str, description: str, action_text: str = None, action_cmd = None):
+        frame = ctk.CTkFrame(parent, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=UIConfig.CORNER_RADIUS_CARD)
+        frame.pack(fill="both", expand=True, pady=20, padx=20)
+        
+        inner = ctk.CTkFrame(frame, fg_color="transparent")
+        inner.place(relx=0.5, rely=0.5, anchor="center")
+        
+        ctk.CTkLabel(inner, text=icon, font=("Segoe UI", 64)).pack(pady=(0, 10))
+        ctk.CTkLabel(inner, text=title, font=("Segoe UI Black", 20), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(0, 5))
+        ctk.CTkLabel(inner, text=description, font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, justify="center").pack(pady=(0, 20))
+        
+        if action_text and action_cmd:
+            ctk.CTkButton(inner, text=action_text, command=action_cmd, fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, height=45, font=UIConfig.FONT_BOLD, corner_radius=UIConfig.CORNER_RADIUS_BTN).pack()
+
+    def setup_ui(self):
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.configure(fg_color=UIConfig.COLOR_BG)
+        
+        # --- САЙДБАР ---
+        self.sidebar = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color=UIConfig.COLOR_SIDEBAR_BG, width=230)
+        self.sidebar.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        
+        ctk.CTkLabel(self.sidebar, text="ETS2\nNEXUS", font=("Segoe UI Black", 24), text_color=UIConfig.COLOR_ACCENT).pack(pady=(30, 5), padx=10)
+        ctk.CTkLabel(self.sidebar, text="⚡ Advanced Modding Core", font=("Segoe UI", 11, "bold"), text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 20))
+        
+        self.process_status_label = ctk.CTkLabel(self.sidebar, text="Инициализация...", font=("Segoe UI", 12, "bold"))
+        self.process_status_label.pack(pady=(0, 5))
+        
+        self.network_status_label = ctk.CTkLabel(self.sidebar, text="🌐 Сеть: Проверка...", font=("Segoe UI", 10), text_color=UIConfig.COLOR_TEXT_MUTED)
+        self.network_status_label.pack(pady=(0, 10))
+        
+        self.dynamic_btn_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.dynamic_btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.create_nav_btn("🏠 Главная", self.show_home)
+        self.create_nav_btn("🔰 Быстрый старт", self.show_newbie)
+        self.create_nav_btn("🔄 Синхронизация", self.find_profiles_step)
+        self.create_nav_btn("☁️ База загрузок", self.show_downloads)
+        
+        ctk.CTkFrame(self.sidebar, height=2, fg_color=UIConfig.COLOR_BTN_GRAY).pack(fill="x", pady=10, padx=10)
+        
+        self.create_nav_btn("📝 Редактор сохранений", self.show_editor_select)
+        self.create_nav_btn("🖥 Настройки и Ввод", self.show_graphics_settings)
+        self.create_nav_btn("📄 Умный лог", self.show_log_viewer)
+        self.create_nav_btn("🛠 Инструменты", self.show_tools)
+        self.create_nav_btn("🧹 Оптимизация", self.show_clean)
+        self.create_nav_btn("💡 База знаний", self.show_faq)
+        
+        ctk.CTkFrame(self.sidebar, height=2, fg_color=UIConfig.COLOR_BTN_GRAY).pack(fill="x", pady=10, padx=10)
+        
+        self.create_nav_btn("⚙️ Параметры", self.show_settings)
+        self.create_nav_btn("💬 Поддержка", self.show_help)
+        
+        upd_btn = ctk.CTkButton(self.sidebar, text="🔄 Проверить обновления", command=lambda: self.check_program_updates(silent=False), 
+                            fg_color=UIConfig.COLOR_PURPLE, text_color="white", hover_color=UIConfig.COLOR_PURPLE_HOVER,
+                            font=UIConfig.FONT_BOLD, height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN)
+        upd_btn.pack(pady=(15, 5), padx=10, fill="x")
+
+        # Минималистичный свитчер тем
+        self.theme_switch = ctk.CTkSwitch(self.sidebar, text="🌙 Темная тема", command=self.toggle_theme_switch, 
+                                          font=("Segoe UI", 12), fg_color=UIConfig.COLOR_BTN_GRAY)
+        self.theme_switch.pack(side="bottom", pady=(10, 20), padx=20, anchor="w")
+        
+        if self.settings.get("appearance") == "Dark":
+            self.theme_switch.select()
+        else:
+            self.theme_switch.deselect()
+            self.theme_switch.configure(text="☀️ Светлая тема")
+
+        self.ver_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.ver_frame.pack(side="bottom", pady=10, padx=10)
+        self.update_version_display()
+
+        # --- КОНТЕНТ И СТАТУС БАР ---
+        self.main_content = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_content.grid(row=0, column=1, sticky="nsew", padx=30, pady=20)
+        
+        self.status_bar = ctk.CTkFrame(self, height=35, corner_radius=0, fg_color=UIConfig.COLOR_STATUS_BG)
+        self.status_bar.grid(row=1, column=1, sticky="ew")
+        
+        self.status_label = ctk.CTkLabel(self.status_bar, textvariable=self.status_text, font=("Segoe UI", 12), text_color=UIConfig.COLOR_TEXT_MUTED)
+        self.status_label.pack(side="left", padx=20, pady=5)
+
+    def _update_process_status(self):
+        if is_game_running():
+            self.process_status_label.configure(text="🟢 Игра активна", text_color=UIConfig.COLOR_SUCCESS)
+            if not self.force_quit_btn:
+                self.force_quit_btn = ctk.CTkButton(self.dynamic_btn_frame, text="🛑 Убить процесс", 
+                                                    fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, 
+                                                    height=28, font=("Segoe UI", 11, "bold"), 
+                                                    command=self.close_game_safely)
+                self.force_quit_btn.pack(fill="x", pady=2)
+        else:
+            self.process_status_label.configure(text="🔴 Игра закрыта", text_color=UIConfig.COLOR_TEXT_MUTED)
+            if self.force_quit_btn:
+                self.force_quit_btn.destroy()
+                self.force_quit_btn = None
+        self.after(3000, self._update_process_status) 
+
+    def _check_network_health(self):
+        def check():
+            try:
+                requests.get("https://api.github.com", timeout=3)
+                self.after(0, lambda: self.network_status_label.configure(text="🌐 Сеть: Подключено", text_color=UIConfig.COLOR_SUCCESS))
+            except:
+                self.after(0, lambda: self.network_status_label.configure(text="🌐 Сеть: Сбой API", text_color=UIConfig.COLOR_DANGER))
+        threading.Thread(target=check, daemon=True).start()
+        self.after(60000, self._check_network_health)
+
+    def create_nav_btn(self, text: str, command) -> ctk.CTkButton:
+        btn = ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", 
+                            text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER,
+                            anchor="w", font=UIConfig.FONT_BOLD, height=40, corner_radius=UIConfig.CORNER_RADIUS_BTN)
+        btn.pack(pady=3, padx=5, fill="x")
+        return btn
+
+    def update_version_display(self):
+        for widget in self.ver_frame.winfo_children():
+            widget.destroy()
+
+        ver = self.check_game_version()
+        ver_color = UIConfig.COLOR_SUCCESS if ver == AppConfig.REQUIRED_VERSION else UIConfig.COLOR_WARNING
+        
+        ctk.CTkLabel(self.ver_frame, text="Установленная версия:", font=("Segoe UI", 11), text_color=UIConfig.COLOR_TEXT_MUTED).pack()
+        ctk.CTkLabel(self.ver_frame, text=ver, font=("Segoe UI", 16, "bold"), text_color=ver_color).pack()
+
+        if ver != "Не найдена" and ver != AppConfig.REQUIRED_VERSION:
+            ctk.CTkLabel(self.ver_frame, text=f"Рекомендуемая: {AppConfig.REQUIRED_VERSION}", 
+                         text_color=UIConfig.COLOR_WARNING, font=("Segoe UI", 10, "bold")).pack()
+
+        if ver == "Не найдена":
+            ctk.CTkButton(self.ver_frame, text="Указать путь", fg_color=UIConfig.COLOR_WARNING, text_color=("white", "black"), 
+                          hover_color="#E0A800", height=30, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.manual_find_game).pack(pady=(10,0))
+
+    def manual_find_game(self):
+        folder = filedialog.askdirectory(title="Укажите корневую директорию Euro Truck Simulator 2")
+        if folder:
+            self.game_path = Path(folder)
+            self.update_version_display()
+            self.show_home() 
+
+    def check_game_version(self) -> str:
+        if self.game_path:
+            exe = self.game_path / "bin" / "win_x64" / "eurotrucks2.exe"
+            if exe.exists():
+                return get_game_version(exe) or "Неизвестна"
+        return "Не найдена"
+
+    def set_status(self, text: str):
+        self.status_text.set(text)
+
+    def clear_content(self):
+        for widget in self.main_content.winfo_children():
+            widget.destroy()
+
+    def get_steam_game_path(self) -> Optional[Path]:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+                steam_path = Path(winreg.QueryValueEx(key, "SteamPath")[0])
+                apps_path = steam_path / "steamapps" / "common" / "Euro Truck Simulator 2"
+                if apps_path.exists(): 
+                    return apps_path
+        except OSError:
+            pass
+
+        for drive in string.ascii_uppercase:
+            if os.path.exists(f"{drive}:\\"):
+                paths = [
+                    Path(f"{drive}:/Program Files (x86)/Steam/steamapps/common/Euro Truck Simulator 2"),
+                    Path(f"{drive}:/SteamLibrary/steamapps/common/Euro Truck Simulator 2")
+                ]
+                for p in paths:
+                    if p.exists(): 
+                        return p
+        return None
+
+    def launch_game(self, extra_args=""):
+        if not is_steam_running():
+            msg = "⚠️ Клиент Steam не запущен!\n\nДля корректного старта игры и работы синхронизации профилей необходимо запустить Steam. Открыть Steam сейчас?"
+            if messagebox.askyesno("Steam не найден", msg):
+                webbrowser.open("steam://open/main")
+                self.set_status("Ожидание запуска Steam...")
+                return
+                
+        self.set_status("Запуск игры...")
+        args = self.settings.get("launch_args", "").strip()
+        if extra_args:
+            args += f" {extra_args}"
+            
+        launch_url = f"steam://rungameid/{AppConfig.STEAM_APP_ID}"
+        if args:
+            launch_url += f"//{args}"
+            
+        try:
+            webbrowser.open(launch_url)
+        except Exception as e:
+            log_error("launch_game", e)
+            messagebox.showerror("Ошибка", f"Сбой при взаимодействии со Steam API.\n{e}")
+            
+    def launch_game_safe_mode(self):
+        if messagebox.askyesno("Безопасный режим (Safe Mode)", "Запустить игру в безопасном режиме?\n\nЭто временно отключит проблемные настройки графики и плагины. Используйте это, если игра вылетает при запуске."):
+            self.launch_game("-safe")
+
+    def close_game_safely(self):
+        self.set_status("Выполняется принудительное завершение...")
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW("prism3d", None)
+            if hwnd:
+                ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0) 
+                time.sleep(1.5) 
+            
+            run_hidden_process(["taskkill", "/f", "/im", "eurotrucks2.exe"])
+            time.sleep(1)
+            self.set_status("Процесс успешно убит.")
+        except Exception as e:
+            log_error("close_game_safely", e)
+            run_hidden_process(["taskkill", "/f", "/im", "eurotrucks2.exe"])
+
+    def get_dir_size(self, path: Path) -> int:
+        if not path.exists(): return 0
+        return sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
+
+    def check_disk_space(self, target_path: Path, required_bytes: int) -> bool:
+        try:
+            drive = target_path.anchor
+            usage = shutil.disk_usage(drive)
+            buffer = 500 * 1024 * 1024
+            if usage.free < (required_bytes + buffer):
+                return False
+            return True
+        except Exception as e:
+            log_error("check_disk_space", e)
+            return True
+
+    def get_free_space_gb(self) -> float:
+        try:
+            drive = Path(os.environ.get("SystemDrive", "C:") + "\\").anchor
+            usage = shutil.disk_usage(drive)
+            return usage.free / (1024**3)
+        except Exception:
+            return 999.0
+            
+    def check_broken_mods(self) -> List[str]:
+        broken_mods = []
+        user_mods_dir = get_my_documents() / "Euro Truck Simulator 2" / "mod"
+        if user_mods_dir.exists():
+            for f in user_mods_dir.rglob('*.scs'):
+                if f.is_file() and f.stat().st_size == 0:
+                    broken_mods.append(f.name)
+        return broken_mods
+
+    def get_missing_dlcs(self) -> List[str]:
+        if not self.game_path: return []
+        missing = []
+        for dlc_file, dlc_name in AppConfig.REQUIRED_DLCS.items():
+            if not (self.game_path / dlc_file).exists():
+                missing.append(dlc_name)
+        return missing
+
+    def get_game_config_path(self) -> Path:
+        return get_my_documents() / "Euro Truck Simulator 2" / "config.cfg"
+
+    def read_game_config(self) -> dict:
+        cfg_path = self.get_game_config_path()
+        settings = {}
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    match = re.match(r'^\s*uset\s+([a-zA-Z0-9_]+)\s+"([^"]*)"', line)
+                    if match:
+                        settings[match.group(1)] = match.group(2)
+        return settings
+
+    def save_game_config(self, updates: dict):
+        cfg_path = self.get_game_config_path()
+        if not cfg_path.exists():
+            messagebox.showerror("Системная ошибка", "Файл настроек не найден. Запустите игру один раз, чтобы он создался.")
+            return
+
+        try:
+            shutil.copy2(cfg_path, cfg_path.with_suffix('.cfg.bak'))
+        except Exception as e:
+            log_error("backup_game_config", e)
+
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                for line in lines:
+                    match = re.match(r'^\s*uset\s+([a-zA-Z0-9_]+)\s+"([^"]*)"', line)
+                    if match and match.group(1) in updates:
+                        f.write(f'uset {match.group(1)} "{updates[match.group(1)]}"\n')
+                    else:
+                        f.write(line)
+            messagebox.showinfo("Готово", "Новые параметры успешно применены. Бэкап сохранен как config.cfg.bak.\nОни вступят в силу при следующем запуске игры.")
+            self.show_graphics_settings()
+        except Exception as e:
+            log_error("save_game_config", e)
+            messagebox.showerror("Ошибка записи", f"Не удалось обновить файл: {e}")
+
+    # ==========================================
+    # --- ВКЛАДКИ ИНТЕРФЕЙСА ---
+    # ==========================================
+
+    def show_graphics_settings(self):
+        self.clear_content()
+        self.set_status("Тонкая настройка графики и ввода")
+        
+        scroll = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        header_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        header_frame.pack(fill="x", pady=(10, 20))
+        
+        ctk.CTkLabel(header_frame, text="🖥 Управление движком и вводом", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(side="left")
+
+        cfg_path = self.get_game_config_path()
+        if not cfg_path.exists():
+            self.show_empty_state(scroll, "⚙️", "Профиль конфигурации отсутствует", "Произведите хотя бы один запуск игры для генерации базовых файлов.", "Запустить игру", self.launch_game)
+            return
+
+        current_cfg = self.read_game_config()
+
+        preset_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        preset_frame.pack(side="right")
+        
+        def apply_preset(preset_type):
+            if preset_type == "fps":
+                self.minicon_var.set("0")
+                self.fps_var.set("1")
+                self.vsync_var.set("0")
+                self.traf_slider.set(0.5)
+                self.traf_val_lbl.configure(text="0.5")
+                self.mirror_slider.set(100)
+                self.mirror_val_lbl.configure(text="100m")
+                self.res_combo.set("1280x720")
+            elif preset_type == "ultra":
+                self.vsync_var.set("1")
+                self.traf_slider.set(2.0)
+                self.traf_val_lbl.configure(text="2.0")
+                self.mirror_slider.set(400)
+                self.mirror_val_lbl.configure(text="400m")
+                self.res_combo.set("3840x2160")
+                
+        ctk.CTkButton(preset_frame, text="⚡ Пресет: Максимум FPS", fg_color=UIConfig.COLOR_WARNING, text_color=("white", "black"), hover_color="#B58500", corner_radius=UIConfig.CORNER_RADIUS_BTN, command=lambda: apply_preset("fps"), font=("Segoe UI", 12, "bold")).pack(side="left", padx=5)
+        ctk.CTkButton(preset_frame, text="🌟 Пресет: Ультра", fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=lambda: apply_preset("ultra"), font=("Segoe UI", 12, "bold")).pack(side="left")
+
+        
+        perf_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_PRO_BG)
+        perf_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(perf_card, text="📊 Мониторинг и Производительность", font=("Segoe UI", 18, "bold"), text_color=UIConfig.COLOR_ACCENT).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        perf_frame = ctk.CTkFrame(perf_card, fg_color="transparent")
+        perf_frame.pack(fill="x", padx=20, pady=(5, 15))
+
+        self.minicon_var = ctk.StringVar(value=current_cfg.get("g_minicon", "0"))
+        self.fps_var = ctk.StringVar(value=current_cfg.get("g_fps", "0"))
+        
+        p1 = ctk.CTkFrame(perf_frame, fg_color="transparent")
+        p1.pack(side="left", padx=(0, 20), anchor="n")
+        ctk.CTkSwitch(p1, text="Включить Мини-консоль", variable=self.minicon_var, onvalue="1", offvalue="0").pack(anchor="w")
+        ctk.CTkLabel(p1, text="Отображает расширенную телеметрию движка", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        p2 = ctk.CTkFrame(perf_frame, fg_color="transparent")
+        p2.pack(side="left", padx=(0, 20), anchor="n")
+        ctk.CTkSwitch(p2, text="Счетчик FPS", variable=self.fps_var, onvalue="1", offvalue="0").pack(anchor="w")
+        ctk.CTkLabel(p2, text="Отображает кадры в секунду на экране", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        gp_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        gp_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(gp_card, text="Игровая сессия и Баланс", font=("Segoe UI", 18, "bold"), text_color=UIConfig.COLOR_SUCCESS).pack(pady=(15, 10), anchor="w", padx=20)
+
+        gp_frame = ctk.CTkFrame(gp_card, fg_color="transparent")
+        gp_frame.pack(fill="x", padx=20, pady=(5, 15))
+
+        self.police_var = ctk.StringVar(value=current_cfg.get("g_police", "1"))
+        col1 = ctk.CTkFrame(gp_frame, fg_color="transparent")
+        col1.pack(side="left", padx=(0, 20), anchor="n")
+        ctk.CTkSwitch(col1, text="Дорожные штрафы (Полиция)", variable=self.police_var, onvalue="1", offvalue="0").pack(anchor="w")
+        ctk.CTkLabel(col1, text="Отключает списания средств за ДТП и скорость", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        self.fatigue_var = ctk.StringVar(value=current_cfg.get("g_fatigue", "1"))
+        col2 = ctk.CTkFrame(gp_frame, fg_color="transparent")
+        col2.pack(side="left", padx=(0, 20), anchor="n")
+        ctk.CTkSwitch(col2, text="Симуляция усталости", variable=self.fatigue_var, onvalue="1", offvalue="0").pack(anchor="w")
+        ctk.CTkLabel(col2, text="Игнорировать таймер сна водителя", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        curr_inc = float(current_cfg.get("g_income_factor", "1.0"))
+        col3 = ctk.CTkFrame(gp_frame, fg_color="transparent")
+        col3.pack(side="left", padx=(20, 10), anchor="n")
+        
+        inc_top = ctk.CTkFrame(col3, fg_color="transparent")
+        inc_top.pack(anchor="w")
+        ctk.CTkLabel(inc_top, text="Экономический множитель:", font=UIConfig.FONT_MAIN).pack(side="left")
+        self.inc_val_lbl = ctk.CTkLabel(inc_top, text=f"{curr_inc:.1f}x", font=UIConfig.FONT_BOLD, text_color=UIConfig.COLOR_WARNING, width=40)
+        self.inc_val_lbl.pack(side="left", padx=5)
+
+        def update_inc_lbl(val):
+            self.inc_val_lbl.configure(text=f"{float(val):.1f}x")
+
+        self.inc_slider = ctk.CTkSlider(col3, from_=0.1, to=5.0, command=update_inc_lbl, width=150, progress_color=UIConfig.COLOR_WARNING, button_color=UIConfig.COLOR_WARNING)
+        self.inc_slider.set(curr_inc)
+        self.inc_slider.pack(anchor="w", pady=(5,0))
+        ctk.CTkLabel(col3, text="Масштабирует вознаграждение за доставку", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        disp_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        disp_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(disp_card, text="Рендер и Окно", font=("Segoe UI", 18, "bold"), text_color=UIConfig.COLOR_ACCENT).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        curr_w = current_cfg.get("r_mode_width", "1920")
+        curr_h = current_cfg.get("r_mode_height", "1080")
+        res_val = f"{curr_w}x{curr_h}"
+        
+        res_frame = ctk.CTkFrame(disp_card, fg_color="transparent")
+        res_frame.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(res_frame, text="Рабочее разрешение:", font=UIConfig.FONT_MAIN).pack(side="left")
+        self.res_combo = ctk.CTkOptionMenu(res_frame, values=["1280x720", "1920x1080", "2560x1440", "3840x2160"], fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN)
+        self.res_combo.set(res_val if res_val in ["1280x720", "1920x1080", "2560x1440", "3840x2160"] else "1920x1080")
+        self.res_combo.pack(side="right")
+
+        chk_frame = ctk.CTkFrame(disp_card, fg_color="transparent")
+        chk_frame.pack(fill="x", padx=20, pady=(15, 5))
+        
+        self.fs_var = ctk.StringVar(value=current_cfg.get("r_fullscreen", "1"))
+        ctk.CTkSwitch(chk_frame, text="Эксклюзивный полный экран", variable=self.fs_var, onvalue="1", offvalue="0").pack(side="left", padx=(0, 20))
+        
+        self.vsync_var = ctk.StringVar(value=current_cfg.get("r_vsync", "1"))
+        ctk.CTkSwitch(chk_frame, text="Буферизация VSync", variable=self.vsync_var, onvalue="1", offvalue="0").pack(side="left")
+
+        mirror_frame = ctk.CTkFrame(disp_card, fg_color="transparent")
+        mirror_frame.pack(fill="x", padx=20, pady=(10, 15))
+        curr_mirror = float(current_cfg.get("r_mirror_view_distance", "200.0"))
+        
+        mirror_info = ctk.CTkFrame(mirror_frame, fg_color="transparent")
+        mirror_info.pack(side="left")
+        ctk.CTkLabel(mirror_info, text="Дальность прорисовки зеркал:", font=UIConfig.FONT_MAIN).pack(anchor="w")
+        ctk.CTkLabel(mirror_info, text="Снижение сильно повышает FPS в кабине", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+        
+        self.mirror_val_lbl = ctk.CTkLabel(mirror_frame, text=f"{curr_mirror:.0f}m", font=UIConfig.FONT_BOLD, text_color=UIConfig.COLOR_ACCENT, width=50)
+        self.mirror_val_lbl.pack(side="right", padx=(10, 0))
+        
+        def update_mirror_lbl(val):
+            self.mirror_val_lbl.configure(text=f"{float(val):.0f}m")
+            
+        self.mirror_slider = ctk.CTkSlider(mirror_frame, from_=50.0, to=500.0, command=update_mirror_lbl, progress_color=UIConfig.COLOR_ACCENT, button_color=UIConfig.COLOR_ACCENT)
+        self.mirror_slider.set(curr_mirror)
+        self.mirror_slider.pack(side="right", fill="x", expand=True, padx=10)
+
+        ctrl_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT, border_width=1, border_color=UIConfig.COLOR_PURPLE)
+        ctrl_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(ctrl_card, text="🎮 Ввод: Оптимизация Рулей", font=("Segoe UI", 18, "bold"), text_color=UIConfig.COLOR_PURPLE).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        ctrl_frame = ctk.CTkFrame(ctrl_card, fg_color="transparent")
+        ctrl_frame.pack(fill="x", padx=20, pady=(5, 15))
+        
+        self.trans_var = ctk.StringVar(value=current_cfg.get("g_trans", "0")) 
+        ctk.CTkSwitch(ctrl_frame, text="Смарт-АКПП (Оптимизация для двух педалей)", variable=self.trans_var, onvalue="0", offvalue="2").pack(anchor="w")
+        ctk.CTkLabel(ctrl_frame, text="Идеально для рулей без сцепления. Автоматическое адаптивное переключение.", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        def apply_wheel_preset():
+            self.trans_var.set("0")
+            messagebox.showinfo("Пресет применен", "Включена Смарт-АКПП. Идеально подходит для рулевых баз без педали сцепления.")
+
+        ctk.CTkButton(ctrl_frame, text="⚡ Применить пресет: Руль без сцепления", fg_color=UIConfig.COLOR_PURPLE, hover_color=UIConfig.COLOR_PURPLE_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=apply_wheel_preset, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(15, 0))
+
+        game_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        game_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(game_card, text="Генерация Мира", font=("Segoe UI", 18, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        traf_frame = ctk.CTkFrame(game_card, fg_color="transparent")
+        traf_frame.pack(fill="x", padx=20, pady=5)
+        
+        traf_info = ctk.CTkFrame(traf_frame, fg_color="transparent")
+        traf_info.pack(side="left")
+        curr_traf = float(current_cfg.get("g_traffic", "1.0"))
+        ctk.CTkLabel(traf_info, text="Плотность ИИ-трафика:", font=UIConfig.FONT_MAIN).pack(anchor="w")
+        ctk.CTkLabel(traf_info, text="Внимание: Значения выше 1.0 сильно нагружают процессор", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+        
+        self.traf_val_lbl = ctk.CTkLabel(traf_frame, text=f"{curr_traf:.1f}", font=UIConfig.FONT_BOLD, text_color=UIConfig.COLOR_WARNING, width=40)
+        self.traf_val_lbl.pack(side="right", padx=(10, 0))
+        
+        def update_traf_lbl(val):
+            self.traf_val_lbl.configure(text=f"{float(val):.1f}")
+            
+        self.traf_slider = ctk.CTkSlider(traf_frame, from_=0.0, to=10.0, command=update_traf_lbl, progress_color=UIConfig.COLOR_WARNING, button_color=UIConfig.COLOR_WARNING)
+        self.traf_slider.set(curr_traf)
+        self.traf_slider.pack(side="right", fill="x", expand=True, padx=10)
+        
+        dev_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        dev_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(dev_card, text="Отладка и Разработка", font=("Segoe UI", 18, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        dchk_frame = ctk.CTkFrame(dev_card, fg_color="transparent")
+        dchk_frame.pack(fill="x", padx=20, pady=(5, 15))
+        
+        self.dev_var = ctk.StringVar(value=current_cfg.get("g_developer", "0"))
+        d1 = ctk.CTkFrame(dchk_frame, fg_color="transparent")
+        d1.pack(side="left", padx=(0, 20), anchor="n")
+        ctk.CTkSwitch(d1, text="Режим разработчика (Свободная камера)", variable=self.dev_var, onvalue="1", offvalue="0").pack(anchor="w")
+        ctk.CTkLabel(d1, text="Активирует режим полета (клавиша '0')", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+        
+        self.cons_var = ctk.StringVar(value=current_cfg.get("g_console", "0"))
+        d2 = ctk.CTkFrame(dchk_frame, fg_color="transparent")
+        d2.pack(side="left", anchor="n")
+        ctk.CTkSwitch(d2, text="Доступ к консоли (~)", variable=self.cons_var, onvalue="1", offvalue="0").pack(anchor="w")
+        ctk.CTkLabel(d2, text="Включает ввод команд напрямую в движок", font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+
+        fly_frame = ctk.CTkFrame(dev_card, fg_color="transparent")
+        fly_frame.pack(fill="x", padx=20, pady=(10, 15))
+        curr_fly = float(current_cfg.get("g_flyspeed", "100.0"))
+        
+        fly_info = ctk.CTkFrame(fly_frame, fg_color="transparent")
+        fly_info.pack(side="left")
+        ctk.CTkLabel(fly_info, text="Скорость свободной камеры (Fly Speed):", font=UIConfig.FONT_MAIN).pack(anchor="w")
+        
+        self.fly_val_lbl = ctk.CTkLabel(fly_frame, text=f"{curr_fly:.0f}", font=UIConfig.FONT_BOLD, text_color=UIConfig.COLOR_ACCENT, width=40)
+        self.fly_val_lbl.pack(side="right", padx=(10, 0))
+        
+        def update_fly_lbl(val):
+            self.fly_val_lbl.configure(text=f"{float(val):.0f}")
+            
+        self.fly_slider = ctk.CTkSlider(fly_frame, from_=10.0, to=500.0, command=update_fly_lbl, progress_color=UIConfig.COLOR_ACCENT, button_color=UIConfig.COLOR_ACCENT)
+        self.fly_slider.set(curr_fly)
+        self.fly_slider.pack(side="right", fill="x", expand=True, padx=10)
+
+        ctk.CTkButton(dev_card, text="📄 Открыть config.cfg вручную", fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=lambda: os.startfile(cfg_path.parent), height=40).pack(pady=(0, 20), padx=20, anchor="w")
+
+        def apply_cfg():
+            if is_game_running():
+                messagebox.showerror("Конфликт процессов", "Невозможно сохранить конфигурацию. Пожалуйста, закройте ETS2 перед применением настроек.")
+                return
+
+            res = self.res_combo.get().split("x")
+            updates = {
+                "r_mode_width": res[0],
+                "r_mode_height": res[1],
+                "r_fullscreen": self.fs_var.get(),
+                "r_vsync": self.vsync_var.get(),
+                "r_mirror_view_distance": f"{self.mirror_slider.get():.0f}", 
+                "g_traffic": f"{self.traf_slider.get():.1f}",
+                "g_developer": self.dev_var.get(),
+                "g_console": self.cons_var.get(),
+                "g_minicon": self.minicon_var.get(),
+                "g_fps": self.fps_var.get(),
+                "g_flyspeed": f"{self.fly_slider.get():.1f}",
+                "g_police": self.police_var.get(),
+                "g_fatigue": self.fatigue_var.get(),
+                "g_income_factor": f"{self.inc_slider.get():.1f}",
+                "g_trans": self.trans_var.get()
+            }
+            self.save_game_config(updates)
+
+        ctk.CTkButton(scroll, text="💾 Сохранить и применить", command=apply_cfg, fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, height=45, corner_radius=UIConfig.CORNER_RADIUS_BTN, font=UIConfig.FONT_BOLD).pack(pady=20, side="right")
+
+    def show_log_viewer(self):
+        self.clear_content()
+        self.set_status("ИИ-Анализ состояния движка")
+        ctk.CTkLabel(self.main_content, text="📄 Умный анализ логов (game.log)", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 5), anchor="w")
+        ctk.CTkLabel(self.main_content, text="Программа сканирует лог игры и автоматически выявляет причины вылетов.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, justify="left").pack(pady=(0, 15), anchor="w")
+        
+        log_path = get_my_documents() / "Euro Truck Simulator 2" / "game.log.txt"
+
+        if not log_path.exists():
+            self.show_empty_state(self.main_content, "📄", "Журнал недоступен", "Файл лога будет создан игрой после первого запуска.", "Запустить игру", self.launch_game)
+            return
+
+        smart_frame = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_INFO_BG, corner_radius=UIConfig.CORNER_RADIUS_CARD)
+        smart_frame.pack(fill="x", pady=(0, 15))
+        
+        top_bar = ctk.CTkFrame(smart_frame, fg_color="transparent")
+        top_bar.pack(fill="x", padx=20, pady=(15, 5))
+        ctk.CTkLabel(top_bar, text="🧠 Диагностический отчет:", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_INFO_TEXT).pack(side="left")
+        
+        self.google_btn = ctk.CTkButton(top_bar, text="🔍 Искать решение в сети", width=180, fg_color=UIConfig.COLOR_INFO_TEXT, hover_color="#2563EB", corner_radius=UIConfig.CORNER_RADIUS_BTN, font=("Segoe UI", 12, "bold"))
+        self.google_btn.pack(side="right")
+        self.google_btn.pack_forget()
+
+        smart_result_label = ctk.CTkLabel(smart_frame, text="Анализ данных...", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MAIN, justify="left", wraplength=700)
+        smart_result_label.pack(pady=(0, 15), padx=20, anchor="w")
+
+        btn_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkButton(btn_frame, text="📂 Открыть исходник лога", command=lambda: os.startfile(log_path), fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=35).pack(side="right")
+        ctk.CTkButton(btn_frame, text="📋 Скопировать лог", command=lambda: [self.clipboard_clear(), self.clipboard_append(log_box.get("1.0", "end")), messagebox.showinfo("Готово", "Лог скопирован в буфер обмена!")], fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=35).pack(side="right", padx=10)
+
+        # Используем FONT_LOG для лучшей читаемости логов
+        log_box = ctk.CTkTextbox(self.main_content, font=UIConfig.FONT_LOG, fg_color=UIConfig.COLOR_LOG_BG, text_color=UIConfig.COLOR_TEXT_MAIN, wrap="none")
+        log_box.pack(fill="both", expand=True, pady=0)
+
+        mode_idx = 0 if self.settings.get("appearance") == "Light" else 1
+        log_box.tag_config("error", foreground=UIConfig.COLOR_DANGER[mode_idx])
+        log_box.tag_config("warn", foreground=UIConfig.COLOR_WARNING[mode_idx])
+        log_box.tag_config("time", foreground=UIConfig.COLOR_ACCENT[mode_idx])
+
+        smart_analysis = set()
+        search_query = ""
+
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+                for line in lines[-2000:]: 
+                    if "<ERROR>" in line:
+                        log_box.insert("end", line, "error")
+                        line_lower = line.lower()
+                        if "dx11" in line_lower or "d3d11" in line_lower or "failed to allocate" in line_lower or "dxgi" in line_lower: 
+                            smart_analysis.add("🚨 Внимание: Зафиксирован критический сбой графики (DirectX 11/Память). Рекомендуется обновить драйвер видеокарты или снизить 'Масштаб' в настройках игры.")
+                            search_query = "ETS2 crash dx11 d3d11 error solution"
+                        elif "d3d11: failed to create texture" in line_lower:
+                            smart_analysis.add("🛑 Критично: Видеокарте не хватает VRAM для загрузки текстур. Снизьте настройки графики.")
+                        elif "taa" in line_lower and "error" in line_lower:
+                            smart_analysis.add("🛑 Критично: Сбой нового алгоритма сглаживания TAA. Попробуйте отключить масштабирование или обновить драйвер видеокарты.")
+                        elif "fs" in line_lower and "failed to open" in line_lower: 
+                            smart_analysis.add("⚠️ Внимание: Движок не может прочитать файлы мода или DLC. Убедитесь в их целостности и что они не заблокированы антивирусом.")
+                            search_query = "ETS2 failed to open file fs error"
+                        elif "unit" in line_lower and "file" in line_lower: 
+                            smart_analysis.add("🛑 Критично: Ошибка парсинга файлов (unit/file). Скорее всего, один из ваших модов сломан или недокачан.")
+                        elif "accessory" in line_lower and "missing" in line_lower: 
+                            smart_analysis.add("⚠️ Внимание: Игра жалуется на отсутствующие детали (accessories). Вы продали грузовик перед удалением мода на него? Если нет — это может привести к вылету.")
+                        elif "hashfs" in line_lower and "unsupported" in line_lower:
+                            smart_analysis.add("🛑 Критично: Один из ваших модов не поддерживается текущей версией игры (ошибка hashfs). Проверьте версию мода.")
+                        elif "out of memory" in line_lower or "bad allocation" in line_lower: 
+                            smart_analysis.add("🛑 Критично: Игре не хватает памяти! Срочно добавьте параметры оптимизации RAM во вкладке 'Параметры'.")
+                            search_query = "ETS2 out of memory bad allocation"
+                        elif "corrupt" in line_lower: 
+                            smart_analysis.add("⚠️ Внимание: Файл сохранения поврежден. Зайдите в 'Инструменты' -> 'Менеджер восстановления'.")
+                            search_query = "ETS2 corrupted save file fix"
+                        elif "physics" in line_lower: 
+                            smart_analysis.add("⚠️ Внимание: Конфликт физики грузовика. Вероятно, вы используете устаревший мод на физику.")
+                            search_query = "ETS2 physics error crash"
+                        elif "game version mismatch" in line_lower or "version mismatch" in line_lower:
+                            smart_analysis.add("🛑 Критично: Вы используете сохранение или мод, созданный для другой версии игры! Убедитесь, что версия игры совпадает с требованиями модов.")
+                        elif "plugin" in line_lower or "telemetry" in line_lower:
+                            smart_analysis.add("🛑 Критично: Сбой стороннего плагина (Telemetry/TruckersMP). Зайдите в 'Оптимизация' и сбросьте плагины.")
+                        elif "promods" in line_lower and "def" in line_lower:
+                            smart_analysis.add("🛑 Критично: Отсутствует или поврежден файл 'Def' от карты ProMods. Сгенерируйте его заново на сайте разработчика мода.")
+                        elif "traffic" in line_lower and "invalid" in line_lower:
+                            smart_analysis.add("⚠️ Внимание: Сбой в генерации трафика. Скорее всего конфликтуют моды на плотность или модели авто.")
+                        elif "dependency" in line_lower and "missing" in line_lower or "incompatible" in line_lower:
+                            smart_analysis.add("🛑 Критично: Зафиксировано отсутствие обязательных модулей (аддонов) для ваших модов. Проверьте порядок загрузки и наличие всех файлов мода.")
+                            search_query = "ETS2 mod dependency missing"
+                        elif "fmod" in line_lower:
+                            smart_analysis.add("⚠️ Внимание: Сбой звукового движка (FMOD). Возможен конфликт модов на звуки грузовиков.")
+                        elif "model" in line_lower and "malformed" in line_lower:
+                            smart_analysis.add("🛑 Критично: Повреждена 3D-модель в одном из модов. Попробуйте отключить последние установленные модификации на грузовики или карты.")
+                        elif "navigation" in line_lower and "building" in line_lower:
+                            smart_analysis.add("⏳ Инфо: Движок строит кэш навигации! Это нормально. При первой загрузке огромных карт (ProMods и др.) игра может 'зависнуть' на 10-15 минут. НЕ ЗАКРЫВАЙТЕ ЕЁ!")
+                    elif "<WARNING>" in line:
+                        log_box.insert("end", line, "warn")
+                    else:
+                        if line.startswith("["):
+                            parts = line.split("]", 1)
+                            log_box.insert("end", parts[0] + "]", "time")
+                            if len(parts) > 1:
+                                log_box.insert("end", parts[1])
+                        else:
+                            log_box.insert("end", line)
+                            
+        except Exception as e:
+            log_box.insert("end", f"Сбой парсера логов: {e}", "error")
+
+        if not smart_analysis:
+            smart_result_label.configure(text="✅ Критических ошибок не найдено. Движок работает стабильно.")
+        else:
+            smart_result_label.configure(text="\n\n".join(smart_analysis), text_color=UIConfig.COLOR_DANGER)
+            if search_query:
+                self.google_btn.pack(side="right")
+                self.google_btn.configure(command=lambda q=search_query: webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(q)}"))
+
+        log_box.configure(state="disabled")
+
+    def show_home(self):
+        self.clear_content()
+        self.set_status("Главная панель")
+        
+        # --- Блок новостей (Telegram/API Integration Placeholder) ---
+        news_card = ctk.CTkFrame(self.main_content, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_PRO_BG, border_width=1, border_color=UIConfig.COLOR_ACCENT)
+        news_card.pack(fill="x", pady=(0, 10), padx=20)
+        
+        news_header = ctk.CTkFrame(news_card, fg_color="transparent")
+        news_header.pack(fill="x", padx=15, pady=(10, 0))
+        ctk.CTkLabel(news_header, text="📡 Лента Новостей (Telegram API)", font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_ACCENT).pack(side="left")
+        
+        # Эмуляция динамической загрузки статуса
+        news_content = "🟢 [Обновление]: ETS2 Nexus обновлен до версии 1.2. Добавлен карантин модов и фикс фризов прицепов.\n💡 Не забудьте обновить кэш после установки тяжелых карт!"
+        ctk.CTkLabel(news_card, text=news_content, font=("Segoe UI", 13), text_color=UIConfig.COLOR_TEXT_MAIN, justify="left").pack(anchor="w", padx=15, pady=(5, 10))
+        # -------------------------------------------------------------
+
+        free_space = self.get_free_space_gb()
+        health_card = ctk.CTkFrame(self.main_content, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        health_card.pack(fill="x", pady=(0, 10), padx=20)
+        
+        health_title_frame = ctk.CTkFrame(health_card, fg_color="transparent")
+        health_title_frame.pack(fill="x", pady=(10, 5), padx=20)
+        ctk.CTkLabel(health_title_frame, text="💻 Монитор системы:", font=("Segoe UI", 14, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN).pack(side="left")
+        
+        status_color = UIConfig.COLOR_SUCCESS if free_space > 15 else UIConfig.COLOR_WARNING
+        disk_warning = ""
+        if free_space < AppConfig.MIN_DISK_SPACE_GB: 
+            status_color = UIConfig.COLOR_DANGER
+            disk_warning = "🛑 КРИТИЧЕСКИ МАЛО МЕСТА! ВОЗМОЖНЫ СБОИ В СОХРАНЕНИЯХ."
+            
+        ctk.CTkLabel(health_title_frame, text=f"Свободно на диске: {free_space:.1f} ГБ", font=UIConfig.FONT_MAIN, text_color=status_color).pack(side="left", padx=10)
+        
+        import psutil
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        ram_status_color = UIConfig.COLOR_SUCCESS if ram_gb >= 16 else UIConfig.COLOR_WARNING
+        ctk.CTkLabel(health_title_frame, text=f"|  ОЗУ: {ram_gb:.1f} ГБ", font=UIConfig.FONT_MAIN, text_color=ram_status_color).pack(side="left", padx=10)
+
+        if disk_warning:
+            ctk.CTkLabel(health_card, text=disk_warning, font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_DANGER).pack(anchor="w", padx=20, pady=(0, 10))
+
+        broken_mods = self.check_broken_mods()
+        if broken_mods:
+            mod_warn_msg = f"🛑 НАЙДЕНЫ БИТЫЕ МОДЫ (0 байт). Игра может вылетать! Проверьте папку mods:\n" + ", ".join(broken_mods[:3]) + ("..." if len(broken_mods) > 3 else "")
+            ctk.CTkLabel(health_card, text=mod_warn_msg, font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_DANGER, wraplength=700).pack(anchor="w", padx=20, pady=(0, 10))
+
+        backup_folder = get_my_documents() / "Euro Truck Simulator 2" / "Backups_Manager"
+        if backup_folder.exists():
+            backup_size_gb = self.get_dir_size(backup_folder) / (1024**3)
+            if backup_size_gb > AppConfig.MAX_BACKUP_FOLDER_SIZE_GB:
+                ctk.CTkLabel(health_card, text=f"⚠️ ВНИМАНИЕ: Папка с бэкапами занимает более {AppConfig.MAX_BACKUP_FOLDER_SIZE_GB} ГБ! Рекомендуется удалить старые архивы.", font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_WARNING, wraplength=700).pack(anchor="w", padx=20, pady=(0, 10))
+
+        if not self.get_game_config_path().exists():
+            ctk.CTkLabel(health_card, text="⚠️ ВНИМАНИЕ: Файл конфигурации игры (config.cfg) не найден. Запустите игру один раз для его генерации.", font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_WARNING, wraplength=700).pack(anchor="w", padx=20, pady=(0, 10))
+
+        doc_path = get_my_documents()
+        if is_onedrive_path(doc_path):
+            od_frame = ctk.CTkFrame(health_card, fg_color="transparent")
+            od_frame.pack(fill="x", padx=20, pady=(0, 10))
+            ctk.CTkLabel(od_frame, text="⚠️ ВНИМАНИЕ: Замечена активная синхронизация OneDrive. Строго рекомендуется отключить её для папки 'Документы', иначе моды и сохранения будут повреждены!", font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_DANGER, wraplength=550, justify="left").pack(side="left")
+            ctk.CTkButton(od_frame, text="Открыть папку", width=100, height=28, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, command=lambda: os.startfile(doc_path)).pack(side="right")
+
+        if is_game_running():
+            warn_banner = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_DANGER, corner_radius=8)
+            warn_banner.pack(fill="x", pady=(0, 10), padx=20)
+            ctk.CTkLabel(warn_banner, text="🎮 ИГРА АКТИВНА. Любые файловые операции заблокированы для вашей безопасности.", 
+                         font=("Segoe UI", 13, "bold"), text_color="white").pack(pady=10, padx=10)
+
+        tip_banner = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_INFO_BG, corner_radius=8)
+        tip_banner.pack(fill="x", pady=(0, 10), padx=20)
+        daily_tip = random.choice(UIConfig.TIPS)
+        
+        tip_color = UIConfig.COLOR_PURPLE[0] if "PRO-Совет" in daily_tip else UIConfig.COLOR_INFO_TEXT
+        ctk.CTkLabel(tip_banner, text=daily_tip, font=("Segoe UI", 12, "bold"), text_color=tip_color).pack(pady=8, padx=10, anchor="w")
+
+        hero_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        hero_frame.pack(fill="both", expand=True, pady=(10, 10), padx=20)
+
+        ctk.CTkLabel(hero_frame, text="EURO TRUCK SIMULATOR 2", font=("Segoe UI Black", 20), text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w")
+        ctk.CTkLabel(hero_frame, text="NEXUS COMMAND PRO", font=UIConfig.FONT_HERO, text_color=UIConfig.COLOR_ACCENT).pack(anchor="w", pady=(0, 10))
+        
+        desc = ("Единый центр управления вашей игрой.\nОптимизируйте графику, управляйте настройками и загружайте файлы напрямую из облачных сервисов.")
+        ctk.CTkLabel(hero_frame, text=desc, font=("Segoe UI", 16), justify="left", text_color=UIConfig.COLOR_TEXT_MAIN).pack(anchor="w", pady=(0, 35))
+
+        cta_frame = ctk.CTkFrame(hero_frame, fg_color="transparent")
+        cta_frame.pack(anchor="w", fill="x", pady=(0, 30))
+
+        cta_row1 = ctk.CTkFrame(cta_frame, fg_color="transparent")
+        cta_row1.pack(anchor="w", fill="x", pady=(0, 15))
+        
+        ctk.CTkButton(cta_row1, text="▶ ИГРАТЬ", font=("Segoe UI Black", 18), fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=60, width=180, command=self.launch_game).pack(side="left", padx=(0, 15))
+        ctk.CTkButton(cta_row1, text="🔰 БЫСТРЫЙ СТАРТ", font=("Segoe UI Black", 18), fg_color=UIConfig.COLOR_PURPLE, hover_color=UIConfig.COLOR_PURPLE_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=60, width=220, command=self.show_newbie).pack(side="left")
+
+        cta_row2 = ctk.CTkFrame(cta_frame, fg_color="transparent")
+        cta_row2.pack(anchor="w", fill="x")
+
+        ctk.CTkButton(cta_row2, text="🔄 СИНХРОНИЗАЦИЯ API", font=("Segoe UI Black", 14), fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=50, width=220, command=self.find_profiles_step).pack(side="left", padx=(0, 15))
+        ctk.CTkButton(cta_row2, text="📦 БЫСТРЫЙ БЭКАП", font=("Segoe UI Black", 14), fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, height=50, width=180, command=self.create_backup).pack(side="left")
+
+        quick_frame = ctk.CTkFrame(hero_frame, fg_color="transparent")
+        quick_frame.pack(anchor="w", fill="x", pady=(0, 20))
+        # Окно на весь экран (открытие в максимизированном состоянии) - реализовано в __init__ через self.after(0, lambda: self.state('zoomed'))
+        ctk.CTkButton(quick_frame, text="📂 Корень игры", command=lambda: os.startfile(self.game_path) if self.game_path else messagebox.showwarning("Ошибка", "Путь не найден"), height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(quick_frame, text="📂 Папка Mods", command=lambda: os.startfile(get_my_documents() / "Euro Truck Simulator 2" / "mod"), height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(quick_frame, text="👤 Профили", command=lambda: os.startfile(get_profiles_dir()), height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(quick_frame, text="🚑 Безопасный режим", command=self.launch_game_safe_mode, height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_WARNING, text_color=("white", "black"), hover_color="#B58500").pack(side="left", padx=(0, 10))
+        
+        crash_log_path = get_my_documents() / "Euro Truck Simulator 2"
+        ctk.CTkButton(quick_frame, text="📄 Открыть логи", command=lambda: os.startfile(crash_log_path), height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER).pack(side="left", padx=(0, 10))
+        
+        cfg_path = self.get_game_config_path()
+        if cfg_path.exists():
+            ctk.CTkButton(quick_frame, text="⚙️ config.cfg", command=lambda: os.startfile(cfg_path), height=35, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER).pack(side="left", padx=(0, 10))
+
+        stats_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        stats_frame.pack(pady=10, padx=20, fill="x")
+        
+        c_mods = "Web Storage"
+        c_dlc = "API"
+        
+        mod_badge = ctk.CTkFrame(stats_frame, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=10, border_width=1, border_color=UIConfig.COLOR_ACCENT)
+        mod_badge.pack(side="left", padx=(0, 15), ipadx=10, ipady=5)
+        ctk.CTkLabel(mod_badge, text="📦 Источник модов", font=("Segoe UI", 12), text_color=UIConfig.COLOR_TEXT_MUTED).pack()
+        ctk.CTkLabel(mod_badge, text=str(c_mods), font=("Segoe UI Black", 24), text_color=UIConfig.COLOR_ACCENT).pack()
+
+        dlc_badge = ctk.CTkFrame(stats_frame, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=10, border_width=1, border_color=UIConfig.COLOR_WARNING)
+        dlc_badge.pack(side="left", padx=(0, 15), ipadx=10, ipady=5)
+        ctk.CTkLabel(dlc_badge, text="🗃️ Источник DLC", font=("Segoe UI", 12), text_color=UIConfig.COLOR_TEXT_MUTED).pack()
+        ctk.CTkLabel(dlc_badge, text=str(c_dlc), font=("Segoe UI Black", 24), text_color=UIConfig.COLOR_WARNING).pack()
+
+        env_card = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_CARD_BG_ALT, corner_radius=UIConfig.CORNER_RADIUS_CARD)
+        env_card.pack(pady=10, padx=20, fill="x")
+        
+        missing_dlcs = self.get_missing_dlcs()
+        if self.game_path is None:
+            ctk.CTkLabel(env_card, text="⚠️ Папка с игрой не найдена. Укажите путь в левом нижнем углу меню.", text_color=UIConfig.COLOR_WARNING, font=UIConfig.FONT_MAIN).pack(pady=15, padx=20, anchor="w")
+        elif not missing_dlcs:
+            ctk.CTkLabel(env_card, text="✅ Структура файлов в норме. Готово к работе с Web-API.", text_color=UIConfig.COLOR_SUCCESS, font=("Segoe UI", 14, "bold")).pack(pady=15, padx=20, anchor="w")
+        else:
+            ctk.CTkLabel(env_card, text="Обратите внимание: У вас отсутствуют некоторые DLC. Программа попытается скачать их с сервера API.", text_color=UIConfig.COLOR_WARNING, font=("Segoe UI", 14, "bold")).pack(pady=(15, 5), padx=20, anchor="w")
+            ctk.CTkFrame(env_card, height=10, fg_color="transparent").pack()
+
+    def show_newbie(self):
+        self.clear_content()
+        self.set_status("Режим развертывания: Быстрый старт")
+        
+        ctk.CTkLabel(self.main_content, text="ВЫБЕРИТЕ МЕТОД УСТАНОВКИ", font=("Segoe UI Black", 24), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(20, 10))
+        
+        warn_frame = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_CARD_BG_ALT, corner_radius=UIConfig.CORNER_RADIUS_CARD, border_width=1, border_color=UIConfig.COLOR_WARNING)
+        warn_frame.pack(fill="x", padx=10, pady=(0, 20))
+        
+        warn_text = (
+            "⚠️ ВАЖНО ПЕРЕД УСТАНОВКОЙ:\n"
+            "• Мультиплеер (Convoy/TruckersMP): Убедитесь, что у всех участников полностью совпадает набор модов.\n"
+            "• Карты (ProMods и др.): Первая загрузка тяжелой карты может длиться 10-15 минут. Это нормально, не закрывайте игру!"
+        )
+        ctk.CTkLabel(warn_frame, text=warn_text, font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_WARNING, justify="left").pack(pady=10, padx=20, anchor="w")
+
+        grid = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        grid.pack(fill="both", expand=True, padx=10)
+
+        card_a = ctk.CTkFrame(grid, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=UIConfig.CORNER_RADIUS_CARD, border_width=1, border_color=UIConfig.COLOR_ACCENT)
+        card_a.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        
+        ctk.CTkLabel(card_a, text="🛠️", font=("Segoe UI", 64)).pack(pady=(40, 10))
+        ctk.CTkLabel(card_a, text="Свой личный профиль", font=("Segoe UI Black", 20), text_color=UIConfig.COLOR_ACCENT).pack()
+        
+        desc_a = "Классический вариант.\nСоздайте новый профиль в игре со своим именем,\nа программа сама подключит к нему\nнужные моды и настройки."
+        ctk.CTkLabel(card_a, text=desc_a, font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, justify="center").pack(pady=20)
+        
+        ctk.CTkButton(card_a, text="СОЗДАТЬ ПРОФИЛЬ", font=("Segoe UI Black", 14), fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=50, command=self.flow_new).pack(side="bottom", pady=40, padx=40, fill="x")
+
+        card_b = ctk.CTkFrame(grid, fg_color=UIConfig.COLOR_CARD_BG_ALT, corner_radius=UIConfig.CORNER_RADIUS_CARD, border_width=1, border_color=UIConfig.COLOR_SUCCESS)
+        card_b.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        
+        ctk.CTkLabel(card_b, text="🚀", font=("Segoe UI", 64)).pack(pady=(40, 10))
+        ctk.CTkLabel(card_b, text="Готовый профиль (Пресет)", font=("Segoe UI Black", 20), text_color=UIConfig.COLOR_SUCCESS).pack()
+        
+        desc_b = "Быстрый старт.\nУстановка уже готового сохранения,\nгде открыты все грузовики, дороги и гаражи.\n\n(Имя водителя изменить будет нельзя)"
+        ctk.CTkLabel(card_b, text=desc_b, font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, justify="center").pack(pady=20)
+        
+        ctk.CTkButton(card_b, text="УСТАНОВИТЬ ПРЕСЕТ", font=("Segoe UI Black", 14), fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=50, command=self.flow_ready).pack(side="bottom", pady=40, padx=40, fill="x")
+
+    def show_downloads(self):
+        self.clear_content()
+        self.set_status("Сетевое хранилище")
+        
+        scroll = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        ctk.CTkLabel(scroll, text="☁️ Облако сборок", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 10), anchor="w")
+        ctk.CTkLabel(scroll, text="В новой версии все загрузки происходят автоматически в процессе Синхронизации.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, justify="left").pack(pady=(0, 20), anchor="w")
+
+        links = [
+            ("GitHub Репозиторий", "Посмотреть релизы и исходные файлы сборок на GitHub.", UIConfig.COLOR_ACCENT, "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/latest"),
+        ]
+
+        for title, desc, color, url in links:
+            card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+            card.pack(fill="x", pady=8)
+            ctk.CTkLabel(card, text=title, font=("Segoe UI", 18, "bold"), text_color=color).pack(pady=(15, 5), anchor="w", padx=20)
+            ctk.CTkLabel(card, text=desc, font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+            ctk.CTkButton(card, text="Перейти", command=lambda u=url: webbrowser.open(u), font=UIConfig.FONT_BOLD, height=40, corner_radius=UIConfig.CORNER_RADIUS_BTN, fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(0, 20), padx=20, anchor="w")
+
+    def show_tools(self):
+        self.clear_content()
+        self.set_status("Утилиты администрирования")
+        
+        scroll = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        ctk.CTkLabel(scroll, text="🛠 Пул Инструментов", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 20), anchor="w")
+
+        profiles = self._get_all_profiles()
+        
+        if not profiles:
+            self.show_empty_state(scroll, "🛠", "Нет профилей для работы", "Сначала создайте профиль в игре, чтобы управлять им здесь.", "Запустить игру", self.launch_game)
+            return
+            
+        profile_names = [f"{p['name']} ({p['type']}) | {p['path']}" for p in profiles]
+
+        # НОВАЯ ФУНКЦИЯ: Карантин модов
+        quarantine_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT, border_width=1, border_color=UIConfig.COLOR_WARNING)
+        quarantine_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(quarantine_card, text="🛡️ Изоляция модов (Режим спасения)", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(quarantine_card, text="Если игра вылетает при запуске и вы не можете понять причину, нажмите эту кнопку.\nПапка 'mod' будет переименована в 'mod_quarantine', что полностью отключит все моды для чистого запуска.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 10), anchor="w", padx=20)
+        ctk.CTkButton(quarantine_card, text="Изолировать моды (Карантин)", fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.quarantine_mods, font=UIConfig.FONT_BOLD, height=40).pack(pady=(10, 20), padx=20, anchor="w")
+
+        # Фикс микрофризов от кастомных прицепов
+        stutter_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        stutter_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(stutter_card, text="🚛 Фикс фризов кастомных прицепов", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_ACCENT).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(stutter_card, text="Оптимизирует параметры проверки грузов (cargo validity) в economy_data.sii, снижая микростаттеры при спавне трейлеров.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 10), anchor="w", padx=20)
+        ctk.CTkButton(stutter_card, text="Создать мини-мод фикса экономики", fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.fix_trailer_stutter, font=UIConfig.FONT_BOLD, height=40).pack(pady=(10, 20), padx=20, anchor="w")
+
+        mod_fix_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        mod_fix_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(mod_fix_card, text="🔧 Починить порядок модов", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(mod_fix_card, text="Сбрасывает порядок загрузки модов в выбранном профиле на правильный.\nПрограмма автоматически создаст бэкап перед действием.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 10), anchor="w", padx=20)
+
+        self.fix_profile_var = ctk.StringVar(value=profile_names[0] if profile_names else "")
+        self.fix_combo = ctk.CTkOptionMenu(mod_fix_card, values=profile_names, variable=self.fix_profile_var, width=500, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN)
+        self.fix_combo.pack(pady=10, padx=20, anchor="w")
+
+        ctk.CTkButton(mod_fix_card, text="Исправить моды", fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.handle_mod_order_fix, font=UIConfig.FONT_BOLD, height=40).pack(pady=(10, 20), padx=20, anchor="w")
+
+        panic_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG, border_width=1, border_color=UIConfig.COLOR_DANGER)
+        panic_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(panic_card, text="🚨 Аварийный сброс (Panic Button)", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_DANGER).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(panic_card, text="Если игра перестала запускаться, вы можете сбросить глобальные настройки (config.cfg).\nПрограмма удалит сломанный файл, и игра создаст чистый при следующем запуске.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 10), anchor="w", padx=20)
+        ctk.CTkButton(panic_card, text="Сбросить конфигурацию игры", fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.reset_global_config, font=UIConfig.FONT_BOLD, height=40).pack(pady=(10, 20), padx=20, anchor="w")
+
+        p_del_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        p_del_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(p_del_card, text="🗑️ Удаление профиля", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_DANGER).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(p_del_card, text="Полностью удаляет профиль с компьютера. Перед удалением создается резервная копия.\nВНИМАНИЕ: Если профиль в Steam Cloud, удаляйте его внутри игры!", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 10), anchor="w", padx=20)
+
+        self.del_profile_var = ctk.StringVar(value=profile_names[0] if profile_names else "")
+        self.del_combo = ctk.CTkOptionMenu(p_del_card, values=profile_names, variable=self.del_profile_var, width=500, fg_color=UIConfig.COLOR_BTN_GRAY, text_color=UIConfig.COLOR_TEXT_MAIN)
+        self.del_combo.pack(pady=10, padx=20, anchor="w")
+
+        ctk.CTkButton(p_del_card, text="Удалить профиль", fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.handle_profile_delete, font=UIConfig.FONT_BOLD, height=40).pack(pady=(10, 20), padx=20, anchor="w")
+
+        f_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        f_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(f_card, text="📦 Резервные копии (Бэкапы)", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        btn_row2 = ctk.CTkFrame(f_card, fg_color="transparent")
+        btn_row2.pack(fill="x", padx=20, pady=(0, 20))
+        ctk.CTkButton(btn_row2, text="Создать бэкап сейчас", fg_color=UIConfig.COLOR_PURPLE, hover_color=UIConfig.COLOR_PURPLE_HOVER, text_color="white", corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.create_backup, height=40).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btn_row2, text="Восстановить из бэкапа", fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.show_backup_manager, height=40).pack(side="left")
+
+    def quarantine_mods(self):
+        """Переименовывает папку mod для экстренного отключения всех модов."""
+        mod_dir = get_my_documents() / "Euro Truck Simulator 2" / "mod"
+        quarantine_dir = get_my_documents() / "Euro Truck Simulator 2" / "mod_quarantine"
+        
+        if quarantine_dir.exists() and not mod_dir.exists():
+            messagebox.showinfo("Инфо", "Моды уже находятся в карантине.\nЧтобы вернуть их, переименуйте 'mod_quarantine' обратно в 'mod' вручную.")
+            return
+
+        if not mod_dir.exists():
+            messagebox.showinfo("Инфо", "Папка 'mod' не найдена. У вас нет установленных модов.")
+            return
+
+        if messagebox.askyesno("Карантин", "Вы уверены? Папка 'mod' будет переименована в 'mod_quarantine'. Игра запустится абсолютно чистой, без модов."):
+            try:
+                # Если папка карантина уже есть от предыдущего раза, удалим ее
+                if quarantine_dir.exists():
+                    shutil.rmtree(quarantine_dir)
+                os.rename(mod_dir, quarantine_dir)
+                messagebox.showinfo("Успех", "Моды помещены в карантин.\nПопробуйте запустить игру. Если она работает, значит проблема была в одном из файлов мода.")
+                self.show_tools()
+            except Exception as e:
+                log_error("quarantine_mods", e)
+                messagebox.showerror("Ошибка", f"Не удалось изолировать моды: {e}")
+
+    def fix_trailer_stutter(self):
+        try:
+            mod_dir = get_my_documents() / "Euro Truck Simulator 2" / "mod"
+            mod_dir.mkdir(parents=True, exist_ok=True)
+            fix_path = mod_dir / "nexus_trailer_stutter_fix.scs"
+            
+            with zipfile.ZipFile(fix_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                manifest = 'SiiNunit\n{\nmod_package : .package_name {\n    package_version: "1.0"\n    display_name: "Nexus Trailer Stutter Fix"\n    author: "Nexus Pro"\n    icon: "mod_icon.jpg"\n}\n}'
+                zf.writestr("manifest.sii", manifest)
+                
+                economy = 'SiiNunit\n{\neconomy_data : economy.data.storage {\n    cargo_validity_min: 0\n    cargo_validity_max: 0\n}\n}'
+                zf.writestr("def/economy_data.sii", economy)
+            
+            messagebox.showinfo("Успех", "Мини-мод 'Nexus Trailer Stutter Fix' успешно создан в папке mods!\nЗайдите в игру и активируйте его в самом верху менеджера модов. Это отключит тяжелую валидацию грузов и уберет фризы при спавне прицепов.")
+        except Exception as e:
+            log_error("fix_trailer_stutter", e)
+            messagebox.showerror("Ошибка", f"Не удалось создать фикс: {e}")
+
+    def reset_global_config(self):
+        cfg_path = self.get_game_config_path()
+        if not cfg_path.exists():
+            messagebox.showinfo("Чисто", "Файл config.cfg не найден. Возможно, игра еще ни разу не запускалась.")
+            return
+            
+        if messagebox.askyesno("Сброс", "Вы уверены? Это сбросит все настройки графики, геймплея и управления в игре к заводским."):
+            try:
+                backup_path = cfg_path.with_suffix('.cfg.panic_backup')
+                shutil.copy2(cfg_path, backup_path)
+                cfg_path.unlink()
+                messagebox.showinfo("Готово", "Конфиг сброшен.\n\nСтарый файл сохранен как config.cfg.panic_backup. При следующем запуске игра создаст чистый профиль настроек.")
+            except Exception as e:
+                log_error("reset_global_config", e)
+                messagebox.showerror("Ошибка", f"Не удалось выполнить сброс: {e}")
+
+    def show_clean(self):
+        self.clear_content()
+        self.set_status("Оптимизация файловой системы")
+        ctk.CTkLabel(self.main_content, text="🧹 Оптимизация системы", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 20), anchor="w")
+        
+        scroll = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        cache_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        cache_card.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(cache_card, text="🗑️ Очистка кэша игры", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(15, 5), anchor="w", padx=20)
+        text = ("Удаляет временные файлы. Помогает избавиться от глюков после удаления старых модов.\nЭто абсолютно безопасно.")
+        ctk.CTkLabel(cache_card, text=text, font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        ctk.CTkButton(cache_card, text="Очистить кэш", command=self.clean_game_files, fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(pady=(0, 20), padx=20, anchor="w")
+
+        dump_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT, border_width=1, border_color=UIConfig.COLOR_WARNING)
+        dump_card.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(dump_card, text="🗑️ Очистка логов и дампов", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(dump_card, text="Игра копит гигантские дампы памяти (game.crash.txt) и старые бэкапы (game.log.bak). Их удаление освободит место на диске.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        ctk.CTkButton(dump_card, text="Удалить критические дампы", command=self.clean_crash_dumps, fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(pady=(0, 20), padx=20, anchor="w")
+
+        screen_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG, border_width=1, border_color=UIConfig.COLOR_ACCENT)
+        screen_card.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(screen_card, text="📸 Менеджер Скриншотов", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_ACCENT).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(screen_card, text="Папка со скриншотами игры часто разрастается до гигантских размеров.\nВы можете быстро очистить ее или открыть для ручного управления.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        
+        screen_btn_frame = ctk.CTkFrame(screen_card, fg_color="transparent")
+        screen_btn_frame.pack(fill="x", pady=(0, 20), padx=20)
+        
+        ctk.CTkButton(screen_btn_frame, text="Очистить папку скриншотов", command=self.clean_screenshots, fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(screen_btn_frame, text="Открыть папку", command=lambda: self.open_or_create_dir(get_my_documents() / "Euro Truck Simulator 2" / "screenshot"), fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40).pack(side="left")
+
+        plugin_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        plugin_card.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(plugin_card, text="🔌 Сброс сторонних плагинов (Telemetry)", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(plugin_card, text="Удаляет старые плагины TruckersMP или телеметрии (папка bin/win_x64/plugins).\nПеред удалением будет создана резервная копия на Рабочем столе.", font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        ctk.CTkButton(plugin_card, text="Удалить плагины", command=self.clean_plugins, fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(pady=(0, 20), padx=20, anchor="w")
+
+        steam_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        steam_card.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(steam_card, text="🛡️ Проверка целостности файлов (Steam)", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_PURPLE).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(steam_card, text="Steam проверит, не повреждены ли файлы самой игры.\nПомогает, если игра вообще не запускается.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        ctk.CTkButton(steam_card, text="Запустить проверку в Steam", command=lambda: webbrowser.open(f"steam://validate/{AppConfig.STEAM_APP_ID}"), fg_color=UIConfig.COLOR_PURPLE, hover_color=UIConfig.COLOR_PURPLE_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(pady=(0, 20), padx=20, anchor="w")
+
+        int_card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        int_card.pack(fill="both", expand=True, pady=0)
+        ctk.CTkLabel(int_card, text="📦 Безопасное удаление модов", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(int_card, text="ВАЖНО: Если вы удаляете мод на грузовик или прицеп, убедитесь, что сначала продали их внутри игры.\nПри удалении мода отсюда, его копия будет сохранена в папку Backups.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 10), anchor="w", padx=20)
+
+        mod_dir = get_my_documents() / "Euro Truck Simulator 2" / "mod"
+        self.mod_checkboxes = []
+
+        if mod_dir.exists() and any(mod_dir.iterdir()):
+            inner_scroll = ctk.CTkScrollableFrame(int_card, fg_color=UIConfig.COLOR_BG, corner_radius=10, height=200)
+            inner_scroll.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+            for item in sorted(mod_dir.iterdir(), key=lambda x: x.name):
+                var = ctk.BooleanVar(value=False)
+                size_mb = item.stat().st_size / (1024 * 1024) if item.is_file() else 0
+                label_text = f"{item.name} ({size_mb:.1f} MB)" if item.is_file() else f"[ПАПКА] {item.name}"
+                
+                chk = ctk.CTkCheckBox(inner_scroll, text=label_text, variable=var, font=("Segoe UI", 13), text_color=UIConfig.COLOR_TEXT_MAIN, hover_color=UIConfig.COLOR_ACCENT)
+                chk.pack(anchor="w", pady=5, padx=5)
+                self.mod_checkboxes.append((item, var))
+
+            ctk.CTkButton(int_card, text="Архивировать и удалить выбранное", command=self.delete_selected_mods, fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40).pack(pady=15, padx=20, anchor="e")
+        else:
+            ctk.CTkLabel(int_card, text="В папке mods сейчас пусто.", text_color=UIConfig.COLOR_TEXT_MUTED, font=UIConfig.FONT_MAIN).pack(pady=20, padx=20, anchor="w")
+
+    def open_or_create_dir(self, path: Path):
+        path.mkdir(parents=True, exist_ok=True)
+        os.startfile(path)
+        
+    def clean_crash_dumps(self):
+        doc_dir = get_my_documents() / "Euro Truck Simulator 2"
+        files_to_remove = ["game.crash.txt", "game.log.bak"]
+        removed = 0
+        
+        for f in files_to_remove:
+            target = doc_dir / f
+            if target.exists():
+                try:
+                    os.remove(target)
+                    removed += 1
+                except Exception as e:
+                    log_error("clean_crash_dumps", e)
+        
+        if removed > 0:
+            messagebox.showinfo("Готово", f"Успешно удалено {removed} файлов старых логов/дампов.")
+        else:
+            messagebox.showinfo("Чисто", "Критических дампов памяти не найдено. Удалять нечего.")
+
+    def clean_screenshots(self):
+        screen_dir = get_my_documents() / "Euro Truck Simulator 2" / "screenshot"
+        if not screen_dir.exists() or not any(screen_dir.iterdir()):
+            messagebox.showinfo("Чисто", "Папка со скриншотами уже пуста!")
+            return
+            
+        if messagebox.askyesno("Очистка", "Вы уверены, что хотите удалить ВСЕ скриншоты? Это действие нельзя отменить."):
+            try:
+                shutil.rmtree(screen_dir)
+                screen_dir.mkdir(parents=True, exist_ok=True)
+                messagebox.showinfo("Готово", "Все скриншоты успешно удалены.")
+            except Exception as e:
+                log_error("clean_screenshots", e)
+                messagebox.showerror("Ошибка", f"Не удалось очистить папку: {e}")
+
+    def clean_plugins(self):
+        if not self.game_path:
+            messagebox.showerror("Ошибка", "Путь к игре не найден. Укажите его в левом нижнем углу меню.")
+            return
+            
+        plugins_dir = self.game_path / "bin" / "win_x64" / "plugins"
+        if not plugins_dir.exists() or not any(plugins_dir.iterdir()):
+            messagebox.showinfo("Чисто", "У вас не установлены сторонние плагины. Очистка не требуется.")
+            return
+            
+        if messagebox.askyesno("Удаление плагинов", "Это удалит все сторонние .dll файлы (например, телеметрию или TruckersMP) из игры.\nВы уверены?"):
+            try:
+                desktop = Path(os.path.expanduser("~")) / "Desktop"
+                backup_dir = desktop / "ETS2_Plugins_Backup"
+                shutil.copytree(plugins_dir, backup_dir, dirs_exist_ok=True)
+                
+                shutil.rmtree(plugins_dir)
+                messagebox.showinfo("Готово", f"Плагины успешно удалены.\n\nКопия удаленных файлов сохранена на рабочем столе в папке 'ETS2_Plugins_Backup'.")
+            except Exception as e:
+                log_error("clean_plugins", e)
+                messagebox.showerror("Ошибка", f"Не удалось удалить папку plugins: {e}")
+
+    def show_settings(self):
+        self.clear_content()
+        self.set_status("Параметры запуска")
+        ctk.CTkLabel(self.main_content, text="⚙️ Настройки запуска", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 20), anchor="w")
+        
+        game_card = ctk.CTkFrame(self.main_content, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        game_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(game_card, text="Аргументы запуска Steam", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(15, 10), anchor="w", padx=20)
+        
+        args_frame = ctk.CTkFrame(game_card, fg_color="transparent")
+        args_frame.pack(fill="x", padx=20, pady=5)
+
+        current_args = self.settings.get("launch_args", "")
+        
+        self.arg_nointro = ctk.BooleanVar(value="-nointro" in current_args)
+        self.arg_unlimitedlog = ctk.BooleanVar(value="-unlimitedlog" in current_args)
+        self.arg_64bit = ctk.BooleanVar(value="-64bit" in current_args)
+        self.direct_unpack_var = ctk.BooleanVar(value=self.settings.get("direct_unpack_mode", False))
+
+        ctk.CTkSwitch(args_frame, text="Убрать заставки (-nointro)", variable=self.arg_nointro, font=UIConfig.FONT_MAIN).pack(side="left", padx=(0, 20))
+        ctk.CTkSwitch(args_frame, text="Снять лимит лога (-unlimitedlog)", variable=self.arg_unlimitedlog, font=UIConfig.FONT_MAIN).pack(side="left", padx=(0, 20))
+        ctk.CTkSwitch(args_frame, text="Форсировать 64-bit (-64bit)", variable=self.arg_64bit, font=UIConfig.FONT_MAIN).pack(side="left", padx=(0, 20))
+        ctk.CTkSwitch(args_frame, text="Прямая распаковка (без кэша)", variable=self.direct_unpack_var, font=UIConfig.FONT_MAIN).pack(side="left")
+
+        ctk.CTkLabel(game_card, text="Свои параметры (через пробел):", font=("Segoe UI", 12), text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w", padx=20, pady=(15, 5))
+        
+        custom_args = current_args.replace("-nointro", "").replace("-unlimitedlog", "").replace("-64bit", "").strip()
+        args_entry = ctk.CTkEntry(game_card, width=600, font=UIConfig.FONT_MAIN, placeholder_text="Например: -homedir C:\\ETS2")
+        args_entry.insert(0, custom_args)
+        args_entry.pack(anchor="w", padx=20, pady=(0, 10))
+
+        def append_ram_args():
+            current = args_entry.get()
+            if "-mm_pool_size" not in current:
+                args_entry.delete(0, 'end')
+                # Оптимизировано под системы с 32GB ОЗУ 
+                args_entry.insert(0, f"{current} -mm_pool_size 16384 -mm_max_resource_size 100 -mm_max_tmp_buffers_size 1000 -cpuLoadLimit 100".strip())
+                messagebox.showinfo("Параметры", "Добавлены ключи оптимизации пула памяти (оптимизировано под 32GB RAM DDR4) и процессора. Это максимизирует стабильность с тяжелыми модами.")
+
+        ctk.CTkButton(game_card, text="⚡ Оптимизировать пул памяти (RAM/CPU)", fg_color=UIConfig.COLOR_PURPLE, hover_color=UIConfig.COLOR_PURPLE_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=append_ram_args, height=30).pack(anchor="w", padx=20, pady=(0, 20))
+
+        
+        def save_args():
+            final_args = []
+            if self.arg_nointro.get(): final_args.append("-nointro")
+            if self.arg_unlimitedlog.get(): final_args.append("-unlimitedlog")
+            if self.arg_64bit.get(): final_args.append("-64bit")
+            if args_entry.get().strip(): final_args.append(args_entry.get().strip())
+            
+            self.settings["launch_args"] = " ".join(final_args)
+            self.settings["direct_unpack_mode"] = self.direct_unpack_var.get()
+            self.save_settings()
+            messagebox.showinfo("Сохранено", "Параметры запуска успешно сохранены.")
+            
+        ctk.CTkButton(game_card, text="💾 Сохранить", command=save_args, fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(anchor="w", padx=20, pady=(0, 20))
+
+        compile_card = ctk.CTkFrame(self.main_content, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        compile_card.pack(fill="x", pady=10)
+        ctk.CTkLabel(compile_card, text="🛠️ Для разработчика: Компиляция в .exe", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(compile_card, text="Сборка программы в единый .exe файл с помощью Nuitка.\nПроцесс может занять 10-15 минут.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        
+        icon_frame = ctk.CTkFrame(compile_card, fg_color="transparent")
+        icon_frame.pack(fill="x", padx=20, pady=(5, 10))
+        
+        ctk.CTkLabel(icon_frame, text="Кастомная иконка (.ico):", font=UIConfig.FONT_MAIN).pack(side="left")
+        icon_lbl = ctk.CTkLabel(icon_frame, textvariable=self.exe_icon_path, font=UIConfig.FONT_HINT, text_color=UIConfig.COLOR_TEXT_MUTED)
+        icon_lbl.pack(side="left", padx=10)
+        
+        def pick_icon():
+            path = filedialog.askopenfilename(title="Выберите иконку приложения", filetypes=[("Icon Files", "*.ico")])
+            if path:
+                self.exe_icon_path.set(path)
+
+        ctk.CTkButton(icon_frame, text="📁 Выбрать файл", command=pick_icon, fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=30).pack(side="right")
+        
+        ctk.CTkButton(compile_card, text="Собрать программу (.exe)", command=self.compile_to_exe, fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(pady=(10, 20), padx=20, anchor="w")
+
+    def show_backup_manager(self):
+        self.clear_content()
+        self.set_status("Точки восстановления")
+        ctk.CTkLabel(self.main_content, text="⏪ Менеджер резервных копий", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 15), anchor="w")
+        ctk.CTkLabel(self.main_content, text="Здесь можно откатить профили до предыдущего рабочего состояния.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w")
+
+        # Добавлено предупреждение про Defender (из контекста)
+        warn_lbl = ctk.CTkLabel(self.main_content, text="🛡️ ВАЖНО: Если бэкапы не восстанавливаются, проверьте Антивирус (Defender) — он мог заблокировать процесс.", font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_WARNING)
+        warn_lbl.pack(anchor="w", pady=(0, 10))
+
+        backup_folder = get_my_documents() / "Euro Truck Simulator 2" / "Backups_Manager"
+        
+        if backup_folder.exists():
+            ctk.CTkButton(self.main_content, text="📂 Открыть папку с бэкапами", 
+                          command=lambda: os.startfile(backup_folder), 
+                          fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN,
+                          text_color=UIConfig.COLOR_TEXT_MAIN).pack(anchor="w", pady=(0, 10))
+        
+        if not backup_folder.exists() or not any(backup_folder.glob("*.zip")):
+            self.show_empty_state(self.main_content, "📁", "Архив пуст", "Вы еще не создавали резервных копий.")
+            return
+
+        scroll = ctk.CTkScrollableFrame(self.main_content, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=10)
+        scroll.pack(fill="both", expand=True, pady=10)
+
+        for zip_file in sorted(backup_folder.glob("*.zip"), key=os.path.getmtime, reverse=True):
+            item_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+            item_frame.pack(fill="x", pady=5, padx=10)
+            
+            size_mb = zip_file.stat().st_size / (1024 * 1024)
+            time_str = datetime.fromtimestamp(zip_file.stat().st_mtime).strftime('%d.%m.%Y %H:%M:%S')
+            
+            info_text = f"📦 {zip_file.name}\nСоздан: {time_str} | Размер: {size_mb:.1f} MB"
+            ctk.CTkLabel(item_frame, text=info_text, font=UIConfig.FONT_MAIN, justify="left").pack(side="left")
+            
+            def restore_backup(path=zip_file):
+                if is_game_running():
+                    messagebox.showerror("Игра запущена", "Пожалуйста, закройте игру перед восстановлением профиля.")
+                    return
+                if messagebox.askyesno("Восстановление", "ВНИМАНИЕ: Текущие профили в игре будут удалены и заменены профилями из этого архива.\n\nПродолжить?"):
+                    self.perform_restore(path)
+            
+            ctk.CTkButton(item_frame, text="Восстановить", fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", corner_radius=UIConfig.CORNER_RADIUS_BTN, text_color=("white", "black"), command=restore_backup, width=120).pack(side="right", padx=10)
+
+    def perform_restore(self, zip_path: Path):
+        profiles_dir = get_profiles_dir()
+        self.set_status("Восстановление из резервной копии...")
+        try:
+            self.create_backup(silent=True)
+            
+            if profiles_dir.exists():
+                shutil.rmtree(profiles_dir)
+            profiles_dir.mkdir(parents=True, exist_ok=True)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(profiles_dir)
+                
+            messagebox.showinfo("Успех", "Резервная копия успешно восстановлена.")
+            self.show_tools()
+        except Exception as e:
+            log_error("perform_restore", e)
+            messagebox.showerror("Сбой восстановления", f"Ошибка при распаковке архива:\n{e}")
+        finally:
+            self.set_status("Ожидание действий")
+
+    def show_faq(self):
+        self.clear_content()
+        self.set_status("База знаний")
+        ctk.CTkLabel(self.main_content, text="💡 Решение проблем (ЧаВо)", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 15), anchor="w")
+        ctk.CTkLabel(self.main_content, text="Ответы на самые частые вопросы и автоматические фиксы.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w")
+
+        scroll = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        faqs = [
+            {"q": "Игра вылетает на рабочий стол при загрузке тяжелых модов (например, ProMods)?", "a": "Скорее всего, движку не хватает памяти под кэш. Наша утилита может безопасно расширить этот буфер (добавит параметр uset r_buffer_page_size 60).", "action_name": "🛠 Применить Оптимизатор памяти", "action": self.apply_buffer_page_fix, "color": UIConfig.COLOR_SUCCESS},
+            {"q": "В 'Инструментах' пишет, что не найден SII_Decrypt.exe!", "a": "Защитник Windows (Antivirus) часто ошибочно удаляет дешифратор как угрозу. Отключите его или добавьте папку программы в исключения.", "action_name": "🛡 Инструкция по исключениям", "action": lambda: webbrowser.open("https://support.microsoft.com/ru-ru/windows/добавление-исключения-в-систему-безопасности-windows-811816c0-4dfd-af4a-47e4-c301afe13b26"), "color": UIConfig.COLOR_WARNING},
+            {"q": "Я удалил мод, и теперь сохранение не грузится!", "a": "Всегда продавайте модифицированные грузовики перед удалением мода. Вы можете откатить сохранение из автоматического бэкапа.", "action_name": "📂 Открыть бэкапы", "action": lambda: os.startfile(get_my_documents() / "Euro Truck Simulator 2" / "Backups_Manager"), "color": UIConfig.COLOR_SUCCESS},
+            {"q": "Где лежат локальные профили игры?", "a": f"Всегда по жесткому пути: {get_profiles_dir()}. Облачные лежат в папке Steam/userdata.", "action_name": "📂 Открыть профили", "action": lambda: os.startfile(get_profiles_dir()), "color": UIConfig.COLOR_BTN_GRAY},
+            {"q": "Где лежат все мои моды?", "a": "Моды хранятся в папке 'mod' в документах. Вы можете открыть её кнопкой ниже.", "action_name": "📂 Открыть папку Mods", "action": lambda: os.startfile(get_my_documents() / "Euro Truck Simulator 2" / "mod"), "color": UIConfig.COLOR_BTN_GRAY},
+            {"q": "Критическая ошибка (Crash) при запуске вообще без модов?", "a": "Возможно, повреждены файлы самой игры. Запустите проверку целостности через Steam.", "action_name": "⚙️ Проверить файлы (Steam)", "action": lambda: webbrowser.open(f"steam://validate/{AppConfig.STEAM_APP_ID}"), "color": UIConfig.COLOR_WARNING},
+        ]
+
+        for item in faqs:
+            card = ctk.CTkFrame(scroll, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+            card.pack(fill="x", pady=10)
+            ctk.CTkLabel(card, text=f"Вопрос: {item['q']}", font=("Segoe UI", 15, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN, wraplength=700, justify="left").pack(pady=(15, 5), padx=20, anchor="w")
+            ctk.CTkLabel(card, text=item['a'], font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, wraplength=700, justify="left").pack(pady=(0, 15), padx=20, anchor="w")
+            
+            if item.get("action"):
+                btn_color = item["color"]
+                hover = btn_color[1] if isinstance(btn_color, tuple) else btn_color
+                if btn_color == UIConfig.COLOR_ACCENT: hover = UIConfig.COLOR_ACCENT_HOVER
+                elif btn_color == UIConfig.COLOR_SUCCESS: hover = UIConfig.COLOR_SUCCESS_HOVER
+                elif btn_color == UIConfig.COLOR_BTN_GRAY: hover = UIConfig.COLOR_BTN_GRAY_HOVER
+                elif btn_color == UIConfig.COLOR_PURPLE: hover = UIConfig.COLOR_PURPLE_HOVER
+
+                text_col = ("white", "black") if btn_color == UIConfig.COLOR_WARNING else "white"
+                if btn_color == UIConfig.COLOR_BTN_GRAY: text_col = UIConfig.COLOR_TEXT_MAIN
+
+                ctk.CTkButton(card, text=item["action_name"], command=item["action"], fg_color=btn_color, hover_color=hover, corner_radius=UIConfig.CORNER_RADIUS_BTN, text_color=text_col, font=UIConfig.FONT_BOLD, height=40).pack(pady=(0, 20), padx=20, anchor="w")
+
+    def apply_buffer_page_fix(self):
+        cfg_path = self.get_game_config_path()
+        if not cfg_path.exists():
+            messagebox.showerror("Ошибка доступа", "Файл конфигурации игры не найден. Запустите игру хотя бы один раз.")
+            return
+
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            found = False
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                for line in lines:
+                    if re.match(r'^\s*uset\s+r_buffer_page_size\s+', line):
+                        f.write('uset r_buffer_page_size "60"\n')
+                        found = True
+                    else:
+                        f.write(line)
+                
+                if not found:
+                    f.write('uset r_buffer_page_size "60"\n')
+
+            messagebox.showinfo("Готово", "Патч памяти применен успешно!\nТеперь игра будет реже вылетать при использовании тяжелых карт.")
+        except Exception as e:
+            log_error("apply_buffer_page_fix", e)
+            messagebox.showerror("Ошибка сохранения", f"Не удалось записать файл: {e}")
+
+    def show_editor_select(self):
+        self.clear_content()
+        self.set_status("Среда редактирования")
+        ctk.CTkLabel(self.main_content, text="📝 Редактор сохранений (profile.sii)", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 5), anchor="w")
+        
+        warn_frame = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_DANGER, corner_radius=10, border_width=2, border_color="#B91C1C")
+        warn_frame.pack(fill="x", pady=(5, 15))
+        warn_title = ctk.CTkLabel(warn_frame, text="⚡ КРИТИЧЕСКИ ВАЖНО О STEAM CLOUD", font=("Segoe UI", 14, "bold"), text_color="white", justify="left")
+        warn_title.pack(anchor="w", padx=15, pady=(10, 0))
+        warn_desc = ctk.CTkLabel(warn_frame, text="Если вы редактируете облачный профиль (иконка ☁️), ваши изменения будут ЗАТЕРТЫ при запуске игры!\nОБЯЗАТЕЛЬНО отключайте Steam Cloud в свойствах профиля внутри игры перед сохранением изменений.", font=("Segoe UI", 12), text_color="white", justify="left")
+        warn_desc.pack(anchor="w", padx=15, pady=(5, 10))
+
+        profiles = self._get_all_profiles()
+
+        if not profiles:
+            self.show_empty_state(self.main_content, "📝", "Профили не найдены", "Сначала создайте профиль в игре.", "Запустить игру", self.launch_game)
+            return
+
+        ctk.CTkLabel(self.main_content, text="Выберите профиль для редактирования кода:", font=("Segoe UI", 14), text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w", pady=(0, 10))
+        
+        scroll = ctk.CTkScrollableFrame(self.main_content, height=300, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=10)
+        scroll.pack(pady=10, fill="both", expand=True)
+
+        self.edit_radio_var = ctk.StringVar(value="")
+        for p in profiles:
+            dt = datetime.fromtimestamp(p['time']).strftime('%d.%m.%Y %H:%M')
+            type_icon = "☁️" if p['type'] == 'Steam Cloud' else "💻"
+            text = f"{type_icon} {p['name']} ({p['type']})  —  Последняя игра: {dt}"
+            ctk.CTkRadioButton(scroll, text=text, variable=self.edit_radio_var, value=str(p['path']), font=("Segoe UI", 14), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=12, anchor="w", padx=15)
+
+        btn_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=20)
+        ctk.CTkButton(btn_frame, text="Открыть редактор", command=self.open_profile_editor, 
+                      fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=45, font=UIConfig.FONT_BOLD).pack(side="right")
+
+    def open_profile_editor(self):
+        if is_game_running():
+            messagebox.showerror("Файлы заняты", "Пожалуйста, закройте игру перед редактированием сохранений.")
+            return
+
+        path_str = getattr(self, 'edit_radio_var', ctk.StringVar()).get()
+        if not path_str:
+            messagebox.showwarning("Профиль не выбран", "Пожалуйста, выберите профиль из списка.")
+            return
+            
+        target_sii = Path(path_str)
+
+        if "remote" in str(target_sii).lower() or "userdata" in str(target_sii).lower():
+            warn_msg = (
+                "☁️ ВНИМАНИЕ: STEAM CLOUD АКТИВЕН\n\n"
+                "Вы выбрали облачное сохранение. Любые изменения, которые вы тут внесете, "
+                "могут быть затерты самим Steam при запуске игры.\n\n"
+                "Рекомендуется редактировать только локальные профили (с иконкой 💻)."
+            )
+            messagebox.showwarning("Уведомление Steam Cloud", warn_msg)
+        
+        sii_decrypt_exe = self._ensure_sii_decrypt()
+        if not sii_decrypt_exe:
+            messagebox.showerror("Компонент не найден", "Программа-дешифратор (SII_Decrypt.exe) не может быть загружена или отсутствует.\n\n"
+                                                      "1. Проверьте соединение с интернетом.\n"
+                                                      "2. Убедитесь, что ваш Антивирус (Windows Defender) не удалил файл (это частая проблема).\n"
+                                                      "Добавьте папку программы в исключения Антивируса и попробуйте снова.")
+            return
+
+        self.set_status("Расшифровка файла...")
+        run_hidden_process([str(sii_decrypt_exe), str(target_sii)])
+        time.sleep(1)
+        self._cleanup_sii_decrypt()
+        
+        lines = read_sii_safe(target_sii)
+        if not lines:
+            messagebox.showerror("Ошибка чтения", "Не удалось прочитать содержимое profile.sii")
+            return
+
+        self.clear_content()
+        self.set_status(f"Редактируем: {target_sii.parent.name}")
+        
+        header_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        header_frame.pack(fill="x", pady=(10, 5))
+        ctk.CTkLabel(header_frame, text="Редактор кода (profile.sii)", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(side="left")
+        
+        def save_file():
+            content = self.editor_textbox.get("1.0", "end-1c")
+            try:
+                with open(target_sii, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                messagebox.showinfo("Сохранено", "Изменения успешно записаны в файл профиля.")
+                self.set_status("Изменения сохранены")
+            except Exception as e:
+                log_error("save_profile_editor", e)
+                messagebox.showerror("Ошибка записи", str(e))
+
+        ctk.CTkButton(header_frame, text="💾 Сохранить изменения", command=save_file, fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(side="right")
+        ctk.CTkButton(header_frame, text="📦 Сделать бэкап", command=self.create_backup, fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, height=40, font=UIConfig.FONT_BOLD).pack(side="right", padx=10)
+
+        express_frame = ctk.CTkFrame(self.main_content, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG_ALT)
+        express_frame.pack(fill="x", pady=(10, 10))
+        ctk.CTkLabel(express_frame, text="⚡ Быстрые инструменты моддинга", font=("Segoe UI", 15, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(10, 5))
+
+        btn_row = ctk.CTkFrame(express_frame, fg_color="transparent")
+        btn_row.pack(pady=(0, 10))
+
+        def add_money():
+            content = self.editor_textbox.get("1.0", "end-1c")
+            new_content, count = re.subn(r'(money_account:\s*)(\d+)', lambda m: f"{m.group(1)}{int(m.group(2)) + 10000000}", content)
+            if count > 0:
+                self.editor_textbox.delete("1.0", "end")
+                self.editor_textbox.insert("1.0", new_content)
+                messagebox.showinfo("Успешно", "Добавлено 10,000,000 €\nНе забудьте нажать 'Сохранить изменения' в правом верхнем углу!")
+            else:
+                messagebox.showwarning("Не найдено", "Строка с деньгами 'money_account' не найдена в файле.")
+
+        def add_xp():
+            content = self.editor_textbox.get("1.0", "end-1c")
+            new_content, count = re.subn(r'(experience_points:\s*)(\d+)', lambda m: f"{m.group(1)}{int(m.group(2)) + 100000}", content)
+            if count > 0:
+                self.editor_textbox.delete("1.0", "end")
+                self.editor_textbox.insert("1.0", new_content)
+                messagebox.showinfo("Успешно", "Добавлено 100,000 XP\nНе забудьте нажать 'Сохранить изменения' в правом верхнем углу!")
+            else:
+                messagebox.showwarning("Не найдено", "Строка с опыта 'experience_points' не найдена в файле.")
+
+        def fix_damage():
+            content = self.editor_textbox.get("1.0", "end-1c")
+            new_content, count = re.subn(r'(wear:\s*)[0-9.]+', r'\g<1>0', content)
+            if count > 0:
+                self.editor_textbox.delete("1.0", "end")
+                self.editor_textbox.insert("1.0", new_content)
+                messagebox.showinfo("Успешно", f"Износ сброшен! (Отремонтировано деталей на грузовике и прицепах: {count})\nНе забудьте нажать 'Сохранить изменения'.")
+            else:
+                messagebox.showwarning("Не найдено", "Детали с износом не найдены.")
+
+        def refuel_truck():
+            content = self.editor_textbox.get("1.0", "end-1c")
+            new_content, count = re.subn(r'(fuel_relative:\s*)[0-9.]+', r'\g<1>1', content)
+            if count > 0:
+                self.editor_textbox.delete("1.0", "end")
+                self.editor_textbox.insert("1.0", new_content)
+                messagebox.showinfo("Успешно", "Грузовик полностью заправлен!\nНе забудьте нажать 'Сохранить изменения'.")
+            else:
+                messagebox.showwarning("Не найдено", "Данные о топливе не найдены.")
+
+        def clear_all_mods():
+            if messagebox.askyesno("Сброс модов", "ВНИМАНИЕ: Вы собираетесь удалить ВСЕ моды из этого профиля сохранения.\nИспользуйте это, если профиль крашится при загрузке.\n\nПродолжить?"):
+                content = self.editor_textbox.get("1.0", "end-1c")
+                new_lines = [line for line in content.split('\n') if "active_mods" not in line]
+                new_content = '\n'.join(new_lines)
+                if len(new_lines) < len(content.split('\n')):
+                    self.editor_textbox.delete("1.0", "end")
+                    self.editor_textbox.insert("1.0", new_content)
+                    messagebox.showinfo("Успешно", "Все привязки к модам удалены!\nНе забудьте нажать 'Сохранить изменения' в правом верхнем углу.")
+                else:
+                    messagebox.showwarning("Не найдено", "В файле не найдено активных модов.")
+
+        ctk.CTkButton(btn_row, text="💰 +10 млн. €", fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=add_money, height=35, font=UIConfig.FONT_BOLD).pack(side="left", padx=10)
+        ctk.CTkButton(btn_row, text="🌟 +100k опыта", fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=add_xp, height=35, font=UIConfig.FONT_BOLD).pack(side="left", padx=10)
+        ctk.CTkButton(btn_row, text="🔧 Починить всё", fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, command=fix_damage, height=35, font=UIConfig.FONT_BOLD).pack(side="left", padx=10)
+        ctk.CTkButton(btn_row, text="⛽ Полный бак", fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=refuel_truck, height=35, font=UIConfig.FONT_BOLD).pack(side="left", padx=10)
+        
+        btn_row2 = ctk.CTkFrame(express_frame, fg_color="transparent") 
+        btn_row2.pack(pady=(0, 15))
+        
+        def force_economy_reset():
+            cfg_path = self.get_game_config_path()
+            try:
+                updates = {"g_force_economy_reset": "1"}
+                self.save_game_config(updates)
+                messagebox.showinfo("Выполнено", "Параметр сброса экономики прописан в config.cfg!\nПри следующем запуске игры вы окажетесь в гараже, а грузы обновятся.")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось обновить конфиг: {e}")
+
+        ctk.CTkButton(btn_row2, text="🛑 Сброс экономики (Фикс багов)", fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=force_economy_reset, height=35, font=UIConfig.FONT_BOLD).pack(side="left", padx=10)
+        ctk.CTkButton(btn_row2, text="🚨 Отвязать ВСЕ моды от сохранения", fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=clear_all_mods, height=35, font=UIConfig.FONT_BOLD).pack(side="left", padx=10)
+
+        self.editor_textbox = ctk.CTkTextbox(self.main_content, font=UIConfig.FONT_LOG, fg_color=UIConfig.COLOR_CARD_BG, text_color=UIConfig.COLOR_TEXT_MAIN, wrap="none")
+        self.editor_textbox.pack(fill="both", expand=True, pady=10)
+        self.editor_textbox.insert("1.0", "".join(lines))
+
+    def show_help(self):
+        self.clear_content()
+        self.set_status("Центр аналитики и поддержки")
+        ctk.CTkLabel(self.main_content, text="💬 Техподдержка", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 20), anchor="w")
+        
+        report_card = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=UIConfig.CORNER_RADIUS_CARD, border_width=1, border_color=UIConfig.COLOR_WARNING)
+        report_card.pack(pady=10, fill="x")
+        ctk.CTkLabel(report_card, text="Сбор отчета об ошибках (Логов)", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_WARNING).pack(pady=(15, 5), anchor="w", padx=20)
+        ctk.CTkLabel(report_card, text="Автоматически собирает файлы логов в один ZIP-архив для отправки разработчику.", font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED).pack(pady=(0, 15), anchor="w", padx=20)
+        
+        btn_frame = ctk.CTkFrame(report_card, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(0, 20), padx=20)
+        
+        ctk.CTkButton(btn_frame, text="Создать ZIP-архив на Рабочем столе", fg_color=UIConfig.COLOR_WARNING, hover_color="#B58500", text_color=("white", "black"), corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.generate_bug_report, font=UIConfig.FONT_BOLD, height=40).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btn_frame, text="Открыть файл логов программы", fg_color=UIConfig.COLOR_BTN_GRAY, hover_color=UIConfig.COLOR_BTN_GRAY_HOVER, text_color=UIConfig.COLOR_TEXT_MAIN, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=lambda: os.startfile(AppConfig.CRASH_LOG_FILE) if AppConfig.CRASH_LOG_FILE.exists() else messagebox.showinfo("Инфо", "Лог ошибок пуст! Программа работает штатно."), height=40).pack(side="left")
+
+        p_card = ctk.CTkFrame(self.main_content, fg_color=UIConfig.COLOR_CARD_BG_ALT, corner_radius=UIConfig.CORNER_RADIUS_CARD, border_width=1, border_color=UIConfig.COLOR_SUCCESS)
+        p_card.pack(pady=10, fill="x")
+        ctk.CTkLabel(p_card, text="Удаленная помощь", font=("Segoe UI", 16, "bold"), text_color=UIConfig.COLOR_SUCCESS).pack(pady=(15, 5), anchor="w", padx=20)
+        warn_text = "Если вы не можете решить проблему сами, разработчик может подключиться удаленно."
+        ctk.CTkLabel(p_card, text=warn_text, font=("Segoe UI", 12, "bold"), text_color=UIConfig.COLOR_WARNING, justify="left").pack(pady=(0, 10), anchor="w", padx=20)
+        desc_text = "Программа попытается открыть AnyDesk или RustDesk (либо скачает портативную версию)."
+        ctk.CTkLabel(p_card, text=desc_text, font=UIConfig.FONT_MAIN, text_color=UIConfig.COLOR_TEXT_MUTED, justify="left").pack(pady=(0, 15), anchor="w", padx=20)
+        
+        f = ctk.CTkFrame(p_card, fg_color="transparent")
+        f.pack(pady=(0, 20), padx=20, anchor="w")
+        ctk.CTkButton(f, text="Запустить AnyDesk/RustDesk", fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=self.request_remote_help, height=40, font=UIConfig.FONT_BOLD).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(f, text="Написать в Telegram разработчику", fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, command=lambda: webbrowser.open("https://t.me/alternt1va"), height=40).pack(side="left")
+
+    def request_remote_help(self):
+        msg = (
+            "Запускается программа удаленного доступа.\n\n"
+            "Скопируйте ваш ID и отправьте его в Telegram (https://t.me/alternt1va).\n"
+            "Вы всегда контролируете мышку и видите, что делает помощник."
+        )
+        messagebox.showinfo("Удаленный доступ", msg)
+        self.set_status("Поиск клиента удаленного доступа...")
+        
+        def process():
+            paths = [
+                Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "AnyDesk" / "AnyDesk.exe",
+                Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "AnyDesk" / "AnyDesk.exe",
+                Path(os.environ.get("LOCALAPPDATA", "C:/")) / "AnyDesk" / "AnyDesk.exe",
+                Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "RustDesk" / "rustdesk.exe"
+            ]
+            
+            target_exe = None
+            for p in paths:
+                if p.exists():
+                    target_exe = p
+                    break
+                    
+            if not target_exe:
+                self.after(0, lambda: self.set_status("Загрузка портативного клиента..."))
+                temp_dir = Path(tempfile.gettempdir())
+                target_exe = temp_dir / "AnyDeskPortable.exe"
+                try:
+                    if not target_exe.exists():
+                        urllib.request.urlretrieve("https://download.anydesk.com/AnyDesk.exe", target_exe)
+                except Exception as e:
+                    log_error("download_anydesk", e)
+                    self.after(0, lambda: messagebox.showerror("Сбой сети", "Не удалось скачать программу, перенаправляю на сайт."))
+                    webbrowser.open("https://anydesk.com/ru/downloads")
+                    self.after(0, lambda: self.set_status("Ожидание действий"))
+                    return
+
+            try:
+                subprocess.Popen([str(target_exe)])
+                self.after(0, lambda: self.set_status("Клиент успешно запущен"))
+            except Exception as e:
+                log_error("launch_remote_help", e)
+                self.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось запустить программу: {e}"))
+                
+        threading.Thread(target=process, daemon=True).start()
+
+    def generate_bug_report(self):
+        desktop = Path(os.path.expanduser("~")) / "Desktop"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        zip_path = desktop / f"Nexus_Report_{timestamp}.zip"
+        
+        files_to_zip = []
+        if AppConfig.CRASH_LOG_FILE.exists():
+            files_to_zip.append(AppConfig.CRASH_LOG_FILE)
+            
+        game_log = get_my_documents() / "Euro Truck Simulator 2" / "game.log.txt"
+        if game_log.exists():
+            files_to_zip.append(game_log)
+            
+        if not files_to_zip:
+            messagebox.showinfo("Чисто", "Файлы логов отсутствуют. Отправлять нечего.")
+            return
+            
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for file_path in files_to_zip:
+                    zf.write(file_path, file_path.name)
+            messagebox.showinfo("Готово", f"Архив с логами успешно сохранен на Рабочем столе:\n{zip_path.name}")
+            os.startfile(desktop)
+        except Exception as e:
+            log_error("generate_bug_report", e)
+            messagebox.showerror("Ошибка", f"Не удалось создать архив: {e}")
+
+    def compile_to_exe(self):
+        if getattr(sys, 'frozen', False) or "__compiled__" in globals():
+            messagebox.showinfo("Внимание", "Программа уже запущена как скомпилированный EXE файл.")
+            return
+        
+        warn_msg = (
+            "Сборка программы в .exe файл может занять длительное время (10+ минут).\n\n"
+            "Убедитесь, что у вас установлен компилятор (например, MinGW или MSVC) и модуль Nuitка.\n"
+            "⚠️ ВАЖНО: Закройте игру перед компиляцией!\n\n"
+            "Продолжить?"
+        )
+        if not messagebox.askyesno("Сборка", warn_msg): 
+            return
+            
+        self.set_status("Идет компиляция Nuitка... Пожалуйста, не закрывайте программу.")
+        script_path = os.path.abspath(__file__)
+        icon_path = self.exe_icon_path.get()
+        
+        def compile_thread():
+            try:
+                cmd = [
+                    sys.executable, "-m", "nuitka",
+                    "--onefile",
+                    "--windows-disable-console",
+                    "--enable-plugin=tk-inter",
+                    "--include-package=customtkinter",
+                    script_path
+                ]
+                
+                if icon_path and Path(icon_path).exists():
+                    cmd.append(f"--windows-icon-from-ico={icon_path}")
+                
+                process = subprocess.Popen(
+                    cmd, 
+                    cwd=AppConfig.BASE_DIR, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.PIPE, 
+                    text=True
+                )
+                stdout, stderr = process.communicate()
+                
+                if process.returncode == 0:
+                    self.after(0, lambda: messagebox.showinfo("Успех", "Компиляция успешно завершена! .exe файл находится в папке с программой."))
+                else:
+                    log_error("compile_to_exe_stderr", Exception(stderr[-1000:]))
+                    self.after(0, lambda: messagebox.showerror("Сбой", "Ошибка компилятора. Подробности записаны в crash_log.txt."))
+            except Exception as e:
+                log_error("compile_to_exe_exception", e)
+                self.after(0, lambda: messagebox.showerror("Ошибка", str(e)))
+            finally:
+                self.after(0, lambda: self.set_status("Система готова"))
+
+        threading.Thread(target=compile_thread, daemon=True).start()
+
+    def handle_mod_order_fix(self):
+        val = getattr(self, 'fix_profile_var', ctk.StringVar()).get()
+        if not val or val.startswith("Выберите"): return
+        path_str = val.split(" | ")[-1]
+        target_sii = Path(path_str)
+
+        if messagebox.askyesno("Исправление модов", "Исправить порядок загрузки модов для этого профиля?\nПрограмма автоматически создаст бэкап перед действием."):
+            self.create_backup(silent=True)
+            self.apply_mod_order_to_path(target_sii, standalone=True)
+
+    def handle_profile_delete(self):
+        val = self.del_profile_var.get()
+        if not val or val.startswith("Выберите"): return
+        path_str = val.split(" | ")[-1]
+        profile_type = val.split(" (")[1].split(")")[0]
+
+        if profile_type == 'Steam Cloud':
+            messagebox.showinfo("Защита данных", "Это облачный профиль. Удалите его прямо внутри игры, чтобы Steam синхронизировал удаление.")
+        else:
+            if messagebox.askyesno("Подтверждение", f"Вы уверены, что хотите НАВСЕГДА удалить этот профиль? (Будет создан бэкап перед удалением).\n\nПуть: {path_str}"):
+                self.create_backup(silent=True)
+                try:
+                    target_dir = Path(path_str).parent
+                    shutil.rmtree(target_dir)
+                    messagebox.showinfo("Удалено", "Папка с профилем успешно удалена.")
+                    self.show_tools() 
+                except Exception as e:
+                    log_error("handle_profile_delete", e)
+                    messagebox.showerror("Ошибка", f"Не удалось удалить папку: {e}")
+
+    def delete_selected_mods(self):
+        to_delete = [path for path, var in self.mod_checkboxes if var.get()]
+        if not to_delete: return messagebox.showinfo("Ожидание", "Вы не выбрали ни одного файла галочкой.")
+
+        msg = f"Архивировать и удалить выбранные моды ({len(to_delete)} шт.)?\n\nФайлы будут сохранены в папке бэкапов перед удалением."
+        if messagebox.askyesno("Подтверждение", msg):
+            backup_folder = get_my_documents() / "Euro Truck Simulator 2" / "Backups_Manager"
+            backup_folder.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            zip_path = backup_folder / f"DeletedMods_{timestamp}.zip"
+
+            errors = 0
+            try:
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for path in to_delete:
+                        if path.is_file():
+                            zipf.write(path, path.name)
+                        elif path.is_dir():
+                            for root, _, files in os.walk(path):
+                                for file in files:
+                                    file_path = Path(root) / file
+                                    zipf.write(file_path, file_path.relative_to(path.parent))
+            except Exception as e:
+                log_error("archive_deleted_mods", e)
+                messagebox.showwarning("Внимание", "Не удалось создать бэкап модов. Удаление отменено.")
+                return
+
+            for path in to_delete:
+                try:
+                    if path.is_file(): path.unlink()
+                    elif path.is_dir(): shutil.rmtree(path)
+                except Exception as e:
+                    log_error("delete_selected_mods", e)
+                    errors += 1
+            if errors: messagebox.showwarning("Внимание", f"Не удалось удалить {errors} файлов. Возможно, они заняты игрой.")
+            else: messagebox.showinfo("Готово", f"Выбранные моды удалены.\nРезервная копия сохранена в:\n{zip_path}")
+            self.show_clean()
+
+    def create_backup(self, silent=False):
+        profiles_dir = get_profiles_dir()
+        if not profiles_dir.exists() or not any(profiles_dir.iterdir()):
+            if not silent: messagebox.showwarning("Отмена", "У вас пока нет локальных профилей, бэкапить нечего.")
+            return False
+
+        backup_folder = get_my_documents() / "Euro Truck Simulator 2" / "Backups_Manager"
+        backup_folder.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        prefix = "AutoBackup" if silent else "ManualBackup"
+        zip_path = backup_folder / f"{prefix}_{timestamp}.zip"
+
+        if not silent: self.set_status("Создание резервной копии...")
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, _, files in os.walk(profiles_dir):
+                    for file in files:
+                        file_path = Path(root) / file
+                        arcname = file_path.relative_to(profiles_dir.parent)
+                        zipf.write(file_path, arcname)
+                        
+            all_backups = sorted(backup_folder.glob("*.zip"), key=os.path.getmtime)
+            if len(all_backups) > AppConfig.MAX_BACKUPS:
+                for old_backup in all_backups[:-AppConfig.MAX_BACKUPS]:
+                    try: old_backup.unlink()
+                    except Exception as e: log_error("rotate_backup", e)
+
+            if not silent: messagebox.showinfo("Готово", f"Резервная копия создана и сохранена:\n{zip_path}")
+            return True
+        except Exception as e:
+            log_error("create_backup", e)
+            if not silent: messagebox.showerror("Ошибка", f"Не удалось создать бэкап: {e}")
+            return False
+        finally:
+            if not silent: self.set_status("Ожидание действий")
+
+    def clean_game_files(self):
+        if not messagebox.askyesno("Очистка", "Очистить кэш игры? Если игра сейчас запущена, она будет автоматически закрыта.\n\n⚠️ Внимание: После очистки первая загрузка игры может длиться дольше обычного."): return
+        
+        self.close_game_safely()
+
+        doc_dir = get_my_documents() / "Euro Truck Simulator 2"
+        try:
+            results = []
+            if (doc_dir / "game.log.txt").exists(): 
+                os.remove(doc_dir / "game.log.txt")
+                results.append("Файл логов (game.log.txt)")
+            if (doc_dir / "cache").exists(): 
+                shutil.rmtree(doc_dir / "cache")
+                results.append("Папка с кэшем (cache)")
+            
+            if results: messagebox.showinfo("Очищено", "Успешно удалены временные файлы:\n\n- " + "\n- ".join(results))
+            else: messagebox.showinfo("Чисто", "Кэш уже пуст, удалять нечего.")
+        except OSError as e:
+            log_error("clean_game_files", e)
+            messagebox.showerror("Ошибка", f"Не удалось очистить кэш: {e}")
+        finally:
+            self.set_status("Оптимизация завершена")
+
+    def flow_new(self):
+        self.mode = 'new'
+        self.launch_game()
+        self.clear_content()
+        ctk.CTkLabel(self.main_content, text="🎮 Ожидание действий в игре...", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_ACCENT).pack(pady=(50, 20))
+        
+        card = ctk.CTkFrame(self.main_content, corner_radius=UIConfig.CORNER_RADIUS_CARD, fg_color=UIConfig.COLOR_CARD_BG)
+        card.pack(pady=10, padx=50, fill="x")
+        steps = "1. Игра запущена.\n2. Создайте нового водителя в главном меню игры.\n3. Дождитесь загрузки и сохраните игру.\n4. Нажмите кнопку ниже (Игра закроется, а моды будут установлены)."
+        ctk.CTkLabel(card, text=steps, font=UIConfig.FONT_MAIN, justify="left", text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=20, padx=20)
+        
+        ctk.CTkButton(self.main_content, text="Я создал профиль, продолжить установку", command=self.close_and_find, 
+                      fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=50, font=UIConfig.FONT_BOLD).pack(pady=30)
+
+    def flow_ready(self):
+        self.mode = 'ready'
+        self.start_sync_ui()
+
+    def close_and_find(self):
+        self.close_game_safely()
+        self.find_profiles_step()
+
+    def _get_all_profiles(self) -> List[Dict]:
+        profiles = []
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+                s_path = Path(winreg.QueryValueEx(key, "SteamPath")[0])
+                p_dir = s_path / "userdata"
+                if p_dir.exists():
+                    for uid in os.listdir(p_dir):
+                        remote = p_dir / uid / AppConfig.STEAM_APP_ID / "remote" / "profiles"
+                        if remote.exists():
+                            for pr in os.listdir(remote):
+                                sii = remote / pr / "profile.sii"
+                                if sii.exists():
+                                    profiles.append({'name': hex_to_nickname(pr), 'path': sii, 'type': 'Steam Cloud', 'time': os.path.getmtime(sii)})
+        except OSError: pass
+
+        loc_dir = get_profiles_dir()
+        if loc_dir.exists():
+            for pr in os.listdir(loc_dir):
+                sii = loc_dir / pr / "profile.sii"
+                if sii.exists(): profiles.append({'name': hex_to_nickname(pr), 'path': sii, 'type': 'Локальный', 'time': os.path.getmtime(sii)})
+
+        profiles.sort(key=lambda x: x['time'], reverse=True)
+        return profiles
+
+    def find_profiles_step(self):
+        self.clear_content()
+        self.set_status("Поиск профилей...")
+        ctk.CTkLabel(self.main_content, text="👤 Выбор профиля", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=(10, 10), anchor="w")
+        
+        profiles = self._get_all_profiles()
+        if not profiles: 
+            self.show_empty_state(self.main_content, "👤", "Профили не найдены", "Для установки модов сначала создайте профиль в игре.", "Запустить игру", self.launch_game)
+            return
+
+        ctk.CTkLabel(self.main_content, text="Выберите профиль, в который нужно установить моды:", font=("Segoe UI", 14), text_color=UIConfig.COLOR_TEXT_MUTED).pack(anchor="w", pady=(0, 10))
+        
+        scroll = ctk.CTkScrollableFrame(self.main_content, width=600, height=350, fg_color=UIConfig.COLOR_CARD_BG, corner_radius=10)
+        scroll.pack(pady=10, fill="both", expand=True)
+
+        self.radio_var = ctk.StringVar(value="")
+        for p in profiles:
+            dt = datetime.fromtimestamp(p['time']).strftime('%d.%m.%Y %H:%M')
+            type_icon = "☁️" if p['type'] == 'Steam Cloud' else "💻"
+            text = f"{type_icon} {p['name']} ({p['type']})  —  Активен: {dt}"
+            ctk.CTkRadioButton(scroll, text=text, variable=self.radio_var, value=str(p['path']), font=("Segoe UI", 14), text_color=UIConfig.COLOR_TEXT_MAIN).pack(pady=12, anchor="w", padx=15)
+
+        btn_frame = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=20)
+        ctk.CTkButton(btn_frame, text="Начать установку модов", command=self.start_sync_ui, fg_color=UIConfig.COLOR_ACCENT, hover_color=UIConfig.COLOR_ACCENT_HOVER, corner_radius=UIConfig.CORNER_RADIUS_BTN, height=50, font=UIConfig.FONT_BOLD).pack(side="right")
+
+    # ==========================================
+    # --- СИНХРОНИЗАЦИЯ И УСТАНОВКА МОДОВ (GITHUB API) ---
+    # ==========================================
+    def start_sync_ui(self):
+        if is_game_running():
+            messagebox.showerror("Игра запущена", "Для синхронизации файлов игра должна быть закрыта.")
+            return
+
+        path_str = getattr(self, 'radio_var', ctk.StringVar()).get()
+        if self.mode != 'ready' and not path_str:
+            return messagebox.showwarning("Ожидание", "Сначала выберите профиль из списка.")
+        
+        self.selected_profile_sii = Path(path_str) if path_str else None
+        
+        self.clear_content()
+        ctk.CTkLabel(self.main_content, text="🔄 Процесс установки", font=UIConfig.FONT_TITLE, text_color=UIConfig.COLOR_ACCENT).pack(pady=(10, 5), anchor="w")
+        
+        self.progress_text = ctk.CTkLabel(self.main_content, text="Получение манифеста с серверов...", font=("Segoe UI", 15, "bold"), text_color=UIConfig.COLOR_TEXT_MAIN)
+        self.progress_text.pack(anchor="w", pady=(10, 0))
+        
+        self.current_file_label = ctk.CTkLabel(self.main_content, text="Подключение...", font=("Consolas", 12), text_color=UIConfig.COLOR_TEXT_MUTED)
+        self.current_file_label.pack(anchor="w", pady=(0, 10))
+
+        self.progress_var = ctk.DoubleVar(value=0.0)
+        self.progress = ctk.CTkProgressBar(self.main_content, variable=self.progress_var, height=18, corner_radius=10, progress_color=UIConfig.COLOR_ACCENT)
+        self.progress.pack(pady=(0, 15), fill="x")
+
+        self.log_box = ctk.CTkTextbox(self.main_content, font=UIConfig.FONT_LOG, fg_color=UIConfig.COLOR_LOG_BG, corner_radius=10, state="disabled", wrap="word")
+        self.log_box.pack(pady=10, fill="both", expand=True)
+        
+        mode_idx = 0 if self.settings.get("appearance") == "Light" else 1
+        self.log_box.tag_config("info", foreground=UIConfig.COLOR_ACCENT[mode_idx])
+        self.log_box.tag_config("success", foreground=UIConfig.COLOR_SUCCESS[mode_idx])
+        self.log_box.tag_config("warn", foreground=UIConfig.COLOR_WARNING[mode_idx])
+        self.log_box.tag_config("error", foreground=UIConfig.COLOR_DANGER[mode_idx])
+        self.log_box.tag_config("muted", foreground=UIConfig.COLOR_TEXT_MUTED[mode_idx])
+
+        self.finish_btn = ctk.CTkButton(self.main_content, text="Выполняется загрузка...", state="disabled", fg_color=UIConfig.COLOR_BTN_GRAY, text_color="gray", corner_radius=UIConfig.CORNER_RADIUS_BTN, height=45, font=UIConfig.FONT_BOLD)
+        self.finish_btn.pack(pady=15, side="right")
+        
+        threading.Thread(target=self.sync_engine, daemon=True).start()
+
+    def safe_log_colored(self, msg: str, tag: str = "muted"):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.after(0, self._insert_log_colored, f"[{timestamp}] {msg}", tag)
+
+    def _insert_log_colored(self, text: str, tag: str):
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", f"{text}\n", tag)
+        self.log_box.see("end")
+        self.log_box.configure(state="disabled")
+
+    def _update_sync_ui_current(self, file_name: str, current: int, total: int):
+        percent = current / total if total > 0 else 1
+        self.progress_var.set(percent)
+        self.progress_text.configure(text=f"Обработка файлов: {current} из {total} ({int(percent * 100)}%)")
+        self.current_file_label.configure(text=f"Файл: {file_name}")
+
+    def _finish_sync_ui(self):
+        self.progress_var.set(1.0)
+        self.progress.configure(progress_color=UIConfig.COLOR_SUCCESS)
+        self.progress_text.configure(text="Установка завершена успешно!", text_color=UIConfig.COLOR_SUCCESS)
+        
+        summary = f"📊 Сводка: Скачано/Установлено: {self.sync_stats['installed']} | Ошибок: {self.sync_stats['errors']} | Пропущено (Кэш): {self.sync_stats['skipped']}"
+        self.current_file_label.configure(text=summary, text_color=UIConfig.COLOR_TEXT_MAIN, font=("Segoe UI", 13, "bold"))
+
+        self.finish_btn.configure(text="▶ ЗАПУСТИТЬ ИГРУ", state="normal", fg_color=UIConfig.COLOR_SUCCESS, hover_color=UIConfig.COLOR_SUCCESS_HOVER, text_color="white", command=self.launch_game)
+        self.set_status("Система готова к запуску")
+
+    def _error_sync_ui(self):
+        self.progress.configure(progress_color=UIConfig.COLOR_DANGER)
+        self.progress_text.configure(text="Процесс прерван. Произошла ошибка.", text_color=UIConfig.COLOR_DANGER)
+        self.set_status("Ошибка во время установки")
+        
+        self.finish_btn.configure(text="Вернуться на Главную", state="normal", fg_color=UIConfig.COLOR_DANGER, hover_color=UIConfig.COLOR_DANGER_HOVER, text_color="white", command=self.show_home)
+
+    def _ensure_sii_decrypt(self):
+        """Интеллектуальная загрузка дешифратора с защитой от лимитов API и проверкой."""
+        sii_path = AppConfig.TEMP_SYNC_DIR / "SII_Decrypt.exe"
+        if sii_path.exists():
+            return sii_path
+
+        self.safe_log_colored("🌐 Скачивание системной утилиты SII_Decrypt...", "muted")
+        AppConfig.TEMP_SYNC_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            # 1. Попытка через основной API
+            api_url = AppConfig.GITHUB_API_URL.replace("/latest", "")
+            resp = requests.get(api_url, timeout=5)
+            resp.raise_for_status()
+            
+            releases = resp.json()
+            if isinstance(releases, dict): 
+                releases = [releases]
+                
+            download_url = None
+            for release in releases:
+                for asset in release.get('assets', []):
+                    if asset['name'] == "SII_Decrypt.exe":
+                        download_url = asset['browser_download_url']
+                        break
+                if download_url: break
+                
+            if not download_url:
+                raise Exception("Файл не найден ни в одном релизе API.")
+                
+            with requests.get(download_url, stream=True, timeout=10) as r:
+                r.raise_for_status()
+                with open(sii_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            return sii_path
+        except Exception as api_err:
+            log_error("_ensure_sii_decrypt_api_fail", api_err)
+            self.safe_log_colored(f"⚠️ Сбой API ({api_err}). Переход на прямую ссылку-фоллбэк...", "warn")
+            
+            # 2. Фоллбэк: прямая загрузка
+            try:
+                with requests.get(AppConfig.FALLBACK_DECRYPT_URL, stream=True, timeout=10) as r:
+                    r.raise_for_status()
+                    with open(sii_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                return sii_path
+            except Exception as direct_err:
+                log_error("_ensure_sii_decrypt_direct_fail", direct_err)
+                self.safe_log_colored("❌ Полный сбой загрузки компонента.", "error")
+                return None
+
+    def _cleanup_sii_decrypt(self):
+        sii_path = AppConfig.TEMP_SYNC_DIR / "SII_Decrypt.exe"
+        try:
+            if sii_path.exists():
+                sii_path.unlink()
+        except Exception:
+            pass
+
+    def _ensure_reference_profile(self):
+        ref_dir = AppConfig.TEMP_SYNC_DIR / "reference_profile_ext"
+        if ref_dir.exists() and any(ref_dir.rglob("profile.sii")):
+            return ref_dir
+
+        self.safe_log_colored("🌐 Скачивание эталонного профиля (для синхронизации)...", "muted")
+        try:
+            api_url = AppConfig.GITHUB_API_URL.replace("/latest", "")
+            resp = requests.get(api_url)
+            resp.raise_for_status()
+            
+            releases = resp.json()
+            if isinstance(releases, dict):
+                releases = [releases]
+                
+            download_asset = None
+            for release in releases:
+                for asset in release.get('assets', []):
+                    if asset['name'] == "reference_profile.7z":
+                        download_asset = asset
+                        break
+                if download_asset: break
+                
+            if not download_asset:
+                return None
+                
+            target = AppConfig.TEMP_SYNC_DIR / download_asset['name']
+            with requests.get(download_asset['browser_download_url'], stream=True) as r:
+                r.raise_for_status()
+                with open(target, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        
+            with py7zr.SevenZipFile(target, mode='r') as z:
+                z.extractall(path=ref_dir)
+            if self.settings.get("direct_unpack_mode", False):
+                target.unlink()
+            return ref_dir
+        except Exception as e:
+            log_error("_ensure_reference_profile", e)
+            return None
+
+    def sync_engine(self):
+        self.after(0, self.set_status, "Соединение с облачным хранилищем...")
+        try:
+            self.safe_log_colored("[СИСТЕМА] Запуск сетевого установщика...", "info")
+            self.safe_log_colored("💾 [БЭКАП] Создание резервной копии перед установкой...", "muted")
+            self.create_backup(silent=True)
+
+            ets_folder = get_my_documents() / "Euro Truck Simulator 2"
+            mod_dir = ets_folder / "mod"
+            mod_dir.mkdir(parents=True, exist_ok=True)
+            AppConfig.TEMP_SYNC_DIR.mkdir(parents=True, exist_ok=True)
+
+            self.safe_log_colored("🌐 [СЕТЬ] Получение списка файлов со всех релизов...", "muted")
+            api_url_all = AppConfig.GITHUB_API_URL.replace("/latest", "")
+            resp = requests.get(api_url_all)
+            resp.raise_for_status()
+            
+            releases = resp.json()
+            if isinstance(releases, dict):
+                releases = [releases]
+
+            # Собираем актуальные версии файлов со всех последних релизов
+            assets_dict = {}
+            for release in releases:
+                for asset in release.get('assets', []):
+                    name = asset['name']
+                    # Игнорируем .exe файлы (саму программу-обновление), чтобы не качать их как моды
+                    if name.endswith('.exe') and name != "SII_Decrypt.exe":
+                        continue
+                        
+                    # Сохраняем только самую новую найденную версию каждого файла 
+                    # (так как API выдает релизы от новых к старым)
+                    if name not in assets_dict:
+                        assets_dict[name] = asset
+                        
+            assets = list(assets_dict.values())
+
+            self.sync_stats = {'total': len(assets), 'current': 0, 'installed': 0, 'updated': 0, 'errors': 0, 'skipped': 0}
+            direct_unpack = self.settings.get("direct_unpack_mode", False)
+
+            def download_asset(asset_dict, target_path):
+                asset_size = asset_dict['size']
+                asset_name = asset_dict['name']
+                download_url = asset_dict['browser_download_url']
+
+                if target_path.exists() and target_path.stat().st_size == asset_size:
+                    self.safe_log_colored(f"⏭ [КЭШ] {asset_name} совпадает по весу, пропускаем скачивание.", "muted")
+                    self.sync_stats['skipped'] += 1
+                    return True
+
+                self.safe_log_colored(f"⬇️ [ЗАГРУЗКА] {asset_name} ({(asset_size/(1024*1024)):.1f} MB)...", "warn")
+                try:
+                    with requests.get(download_url, stream=True) as r:
+                        r.raise_for_status()
+                        with open(target_path, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                if chunk: f.write(chunk)
+                    self.sync_stats['installed'] += 1
+                    return True
+                except Exception as e:
+                    self.safe_log_colored(f"⚠️ [ОШИБКА ЗАГРУЗКИ] {asset_name}: {e}", "error")
+                    self.sync_stats['errors'] += 1
+                    if target_path.exists(): target_path.unlink()
+                    return False
+
+            self.safe_log_colored("\n[1/4] ОБРАБОТКА И УСТАНОВКА МОДОВ / DLC", "info")
+            for asset in assets:
+                self.sync_stats['current'] += 1
+                self.after(0, self._update_sync_ui_current, asset['name'], self.sync_stats['current'], self.sync_stats['total'])
+                name = asset['name']
+
+                if name == "SII_Decrypt.exe":
+                    continue 
+
+                elif name.startswith("dlc") and name.endswith(".scs"):
+                    if self.game_path:
+                        target = self.game_path / name
+                        download_asset(asset, target)
+                    else:
+                        self.safe_log_colored(f"⚠️ [ВНИМАНИЕ] Путь к игре не найден. Пропуск DLC: {name}", "warn")
+
+                elif name == "bin.7z":
+                    if self.game_path:
+                        target = AppConfig.TEMP_SYNC_DIR / name
+                        if download_asset(asset, target):
+                            self.safe_log_colored(f"📦 [РАСПАКОВКА] Интеграция {name} в bin/win_x64...", "info")
+                            with py7zr.SevenZipFile(target, mode='r') as z:
+                                z.extractall(path=self.game_path)
+                            if direct_unpack: target.unlink(missing_ok=True)
+
+                elif name == "reference_profile.7z":
+                    target = AppConfig.TEMP_SYNC_DIR / name
+                    if download_asset(asset, target):
+                        if self.mode == 'ready':
+                            self.safe_log_colored(f"📦 [РАСПАКОВКА] Прямая установка готового профиля...", "info")
+                            self.install_ready_profile(target)
+                        else:
+                            self.safe_log_colored(f"📦 [РАСПАКОВКА] Подготовка базы профилей...", "info")
+                            ref_dir = AppConfig.TEMP_SYNC_DIR / "reference_profile_ext"
+                            ref_dir.mkdir(exist_ok=True)
+                            with py7zr.SevenZipFile(target, mode='r') as z:
+                                z.extractall(path=ref_dir)
+                        if direct_unpack: target.unlink(missing_ok=True)
+
+                elif name.endswith(".zip") and "dlcsupport" in name.lower():
+                    target = mod_dir / name
+                    self.safe_log_colored(f"🚚 [ПЕРЕНОС] {name} в папку mod...", "info")
+                    download_asset(asset, target)
+                    
+                # ИНТЕГРАЦИЯ ПОДДЕРЖКИ ПОЛНОЦЕННЫХ ПОДПАПОК ZIP
+                elif name.endswith(".zip"):
+                    target = AppConfig.TEMP_SYNC_DIR / name
+                    if download_asset(asset, target):
+                        self.safe_log_colored(f"📁 [СТРУКТУРА ПАПОК] Рекурсивная распаковка {name}...", "info")
+                        try:
+                            # Библиотека zipfile нативно поддерживает и сохраняет структуру вложенных папок
+                            with zipfile.ZipFile(target, 'r') as z:
+                                z.extractall(path=mod_dir)
+                            if direct_unpack: target.unlink(missing_ok=True)
+                        except Exception as e:
+                            self.safe_log_colored(f"⚠️ [ОШИБКА РАСПАКОВКИ] Не удалось извлечь подпапки: {e}", "error")
+
+                elif name.endswith(".7z"):
+                    target = AppConfig.TEMP_SYNC_DIR / name
+                    if download_asset(asset, target):
+                        self.safe_log_colored(f"📦 [РАСПАКОВКА] {name} в папку mod...", "info")
+                        with py7zr.SevenZipFile(target, mode='r') as z:
+                            z.extractall(path=mod_dir)
+                        if direct_unpack: target.unlink(missing_ok=True)
+                else:
+                    target = mod_dir / name
+                    download_asset(asset, target)
+
+            self.safe_log_colored("\n[2/4] НАСТРОЙКА: ФАЙЛЫ ПРОФИЛЯ", "info")
+            if self.mode == 'new' and self.selected_profile_sii:
+                self.apply_mod_order()
+
+            self.safe_log_colored("\n🧹 [ОЧИСТКА] Удаление временных файлов...", "info")
+            try:
+                if AppConfig.TEMP_SYNC_DIR.exists():
+                    shutil.rmtree(AppConfig.TEMP_SYNC_DIR, ignore_errors=True)
+                    self.safe_log_colored("✅ [ОЧИСТКА] Папка temp_sync успешно удалена", "success")
+            except Exception as clean_e:
+                self.safe_log_colored(f"⚠️ [ВНИМАНИЕ] Не удалось удалить temp_sync: {clean_e}", "warn")
+
+            self.safe_log_colored("\n✅ ВСЕ ЗАДАЧИ ВЫПОЛНЕНЫ", "success")
+            self.after(0, self._finish_sync_ui)
+
+        except Exception as e:
+            log_error("sync_engine", e)
+            self.safe_log_colored(f"❌ [КРИТИЧЕСКАЯ ОШИБКА] {str(e)}", "error")
+            self.safe_log_colored("Перейдите в раздел техподдержки и сохраните лог.", "muted")
+            
+            try:
+                if AppConfig.TEMP_SYNC_DIR.exists():
+                    shutil.rmtree(AppConfig.TEMP_SYNC_DIR, ignore_errors=True)
+            except Exception:
+                pass
+            
+            self.after(0, self._error_sync_ui)
+
+    def install_ready_profile(self, archive_path: Path):
+        dest_base = get_profiles_dir()
+        dest_base.mkdir(parents=True, exist_ok=True)
+        try:
+            with py7zr.SevenZipFile(archive_path, mode='r') as z:
+                z.extractall(path=dest_base)
+            self.safe_log_colored(f"✅ [ПРОФИЛЬ] Готовый профиль успешно распакован напрямую в папку profiles", "success")
+        except Exception as e:
+            log_error("install_ready_profile", e)
+            self.safe_log_colored(f"⚠️ [ОШИБКА] Не удалось распаковать профиль: {e}", "error")
+
+    def apply_mod_order_to_path(self, target_sii: Path, standalone=False):
+        sii_decrypt_exe = self._ensure_sii_decrypt()
+        if not sii_decrypt_exe:
+            msg = "❌ [ОШИБКА] Компонент дешифратора был заблокирован или недоступен для скачивания."
+            if not standalone: 
+                self.safe_log_colored(msg, "error")
+            else: 
+                messagebox.showerror("Ошибка Антивируса", "Системный компонент SII_Decrypt.exe удален вашим антивирусом или недоступен.\n\nДобавьте папку в исключения Defender и повторите попытку.")
+            return False
+
+        backup_path = target_sii.with_suffix('.sii.bak')
+        try:
+            shutil.copy2(target_sii, backup_path)
+            if not standalone: self.safe_log_colored(f"💾 [БЭКАП] Локальная копия профиля сохранена ({backup_path.name})", "info")
+        except Exception as e:
+            log_error("apply_mod_order - backup", e)
+            if not standalone: self.safe_log_colored(f"⚠️ [ОШИБКА] Не удалось сделать бэкап profile.sii: {e}", "error")
+
+        if not standalone: self.safe_log_colored("🔓 [ДЕШИФРОВКА] Чтение файла профиля...", "muted")
+        run_hidden_process([str(sii_decrypt_exe), str(target_sii)])
+        
+        ref_dir = self._ensure_reference_profile()
+        if not ref_dir:
+            msg = "❌ [ОШИБКА] Эталонный профиль недоступен"
+            if not standalone: self.safe_log_colored(msg, "error")
+            else: messagebox.showerror("Ошибка", msg)
+            return False
+
+        try:
+            ref_path = next(ref_dir.rglob("profile.sii"))
+        except StopIteration:
+            msg = "❌ [ОШИБКА] Эталонный файл порядка модов не найден в скачанном архиве"
+            if not standalone: self.safe_log_colored(msg, "error")
+            else: messagebox.showwarning("Предупреждение", msg)
+            return False
+        
+        run_hidden_process([str(sii_decrypt_exe), str(ref_path)])
+        time.sleep(1.5)
+        
+        self._cleanup_sii_decrypt()
+        
+        u_lines = read_sii_safe(target_sii)
+        r_lines = read_sii_safe(ref_path)
+        
+        if not u_lines or not r_lines:
+            msg = "❌ [ОШИБКА] Невозможно прочитать файлы профиля"
+            if not standalone: self.safe_log_colored(msg, "error")
+            else: messagebox.showerror("Ошибка", "Чтение файлов конфигурации не удалось.")
+            return False
+
+        r_mods = [l for l in r_lines if "active_mods[" in l or "active_mods:" in l]
+        
+        final = []
+        skip = False
+        for line in u_lines:
+            if "active_mods[" in line or "active_mods:" in line:
+                if not skip:
+                    final.extend(r_mods)
+                    skip = True
+                continue
+            if skip and "active_mods" not in line: skip = False
+            if not skip: final.append(line)
+                
+        try:
+            with open(target_sii, 'w', encoding='utf-8') as f:
+                f.writelines(final)
+            if not standalone: 
+                self.safe_log_colored("✅ [СИНХРОНИЗАЦИЯ] Порядок модов успешно применен!", "success")
+            else:
+                messagebox.showinfo("Готово", "Правильный порядок модов применен к профилю.")
+            return True
+        except IOError as e:
+            log_error("apply_mod_order - write", e)
+            msg = f"❌ [ОШИБКА ЗАПИСИ]: {e}"
+            if not standalone: self.safe_log_colored(msg, "error")
+            else: messagebox.showerror("Сбой записи", "Не удалось сохранить файл профиля.")
+            return False
+
+    def apply_mod_order(self):
+        self.apply_mod_order_to_path(self.selected_profile_sii, standalone=False)
+
+
+if __name__ == "__main__":
+    setup_logging()
+    if not is_admin():
+        is_compiled = "__compiled__" in globals() or getattr(sys, 'frozen', False)
+        
+        if is_compiled:
+            executable = os.path.abspath(sys.argv[0])
+            params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+        else:
+            executable = sys.executable
+            params = f'"{os.path.abspath(__file__)}" ' + " ".join(f'"{arg}"' for arg in sys.argv[1:])
+            
+        work_dir = str(AppConfig.BASE_DIR)
+        
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, work_dir, 1)
+        sys.exit(0)
+    else:
+        app = ETS2Manager()
+        app.mainloop()
