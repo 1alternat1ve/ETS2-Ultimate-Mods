@@ -11,8 +11,6 @@ export const IS_TAURI = typeof window !== "undefined" && (
   "__TAURI__" in window ||
   window.navigator.userAgent.includes("Tauri")
 );
-export const IS_DEMO = false;
-export const IS_PROD = true;
 
 type Mocks = Record<string, (args?: any) => any | Promise<any>>;
 
@@ -52,6 +50,9 @@ const mocks: Mocks = {
     ram_gb: 32,
     tier: "ultra",
   }),
+
+  // [BROWSER-DEV FALLBACK] Reset UI scale
+  reset_ui_scale: () => Promise.resolve(1.0),
 
   // [BROWSER-DEV FALLBACK] Profiles
   list_profiles: () => [
@@ -107,6 +108,12 @@ const mocks: Mocks = {
   close_game: () => true,
   get_free_space: (path: string) => path.includes("ETS2") ? 487 : 500,
   read_game_log: () => "[00:00:00] <i18n> Language loaded: ru_RU\n[00:00:01] <log> System info: Windows 11 Pro\n[00:00:02] <game> Euro Truck Simulator 2 started\n[00:00:05] <render> DirectX 11 initialized\n[00:00:10] <render> All shaders compiled successfully\n[00:00:15] <mod> Loading mods from profile\n[00:00:20] <mod> ProMods_2.71 loaded OK\n[00:00:22] <mod> RusMap_2.50 loaded OK\n[00:00:30] <loading> Loading world map\n[00:01:00] <game> World ready. Good luck on the roads!",
+  read_game_crash_log: () => "[CRASH] Out of memory at renderer.dll:0x00421F30\n[STACK] Thread 0 crashed",
+
+  // [BROWSER-DEV FALLBACK] Launcher log
+  read_install_log: () => "",
+  clear_install_log: () => {},
+  read_launcher_log: () => "[08:15:23.412] [INFO] Nexus v2 started\n[08:15:24.100] [INFO] Settings loaded\n[08:15:25.300] [ERROR] Test error",
 
   // [BROWSER-DEV FALLBACK] GitHub token
   get_github_token: () => "",
@@ -141,6 +148,10 @@ const mocks: Mocks = {
 
   // [BROWSER-DEV FALLBACK] Manifest
   get_manifest: () => ({}),
+
+  // [BROWSER-DEV FALLBACK] Updater
+  check_launcher_update: () => ({ available: false }),
+  download_and_run_update: () => true,
 };
 
 export async function invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -149,7 +160,7 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
     try {
       const logArgs = args ? JSON.stringify(args) : "none";
       const logMsg = `[${new Date().toISOString()}] invoking: ${cmd} args=${logArgs}`;
-      tauriInvoke("log_to_file", { message: logMsg }).catch(() => {});
+      tauriInvoke("log_install", { message: logMsg }).catch(() => {});
       if (cmd === "download_with_progress") {
         console.log("[TAURI-INVOKE] download_with_progress args:", JSON.stringify(args));
       }
@@ -163,7 +174,6 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
       "install_start",
       "create_backup",
       "restore_backup",
-      "apply_profile_mods",
       "copy_to_mods",
       "steam_validate",
       "clean_game_files",
@@ -180,7 +190,7 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
         return await tauriInvoke<T>(cmd, args);
       } catch (e) {
         console.error(`[invoke] command "${cmd}" failed:`, e);
-        try { tauriInvoke("log_to_file", { message: `[ERROR] invoke ${cmd} failed: ${e}` }).catch(() => {}); } catch (_) {}
+        try { tauriInvoke("log_install", { message: `[ERROR] invoke ${cmd} failed: ${e}` }).catch(() => {}); } catch (_) {}
         throw e;
       }
     }
@@ -192,7 +202,7 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
       return await Promise.race([tauriInvoke<T>(cmd, args), timeout]);
     } catch (e) {
       console.error(`[invoke] command "${cmd}" failed:`, e);
-      try { tauriInvoke("log_to_file", { message: `[ERROR] invoke ${cmd} failed: ${e}` }).catch(() => {}); } catch (_) {}
+      try { tauriInvoke("log_install", { message: `[ERROR] invoke ${cmd} failed: ${e}` }).catch(() => {}); } catch (_) {}
       throw e;
     }
   }
@@ -212,6 +222,7 @@ export const realTauri = {
   // Settings
   get_settings: () => invoke<Settings>("get_settings"),
   set_settings: (settings: Settings) => invoke("set_settings", { settings }),
+  reset_ui_scale: () => invoke<number>("reset_ui_scale"),
 
   // GitHub
   fetch_release: (owner: string, repo: string, tag: string, token?: string) =>
@@ -240,8 +251,9 @@ export const realTauri = {
   patch_profile_mods_from_txt: (reference_txt: string, user_profile_sii_path: string) =>
     invoke("patch_profile_mods_from_txt", { reference_txt, user_profile_sii_path }),
   decrypt_sii_command: (path: string) => invoke<string>("decrypt_sii_command", { path }),
-  encrypt_sii_command: (plainText: string, outputPath: string) =>
-    invoke<string>("encrypt_sii_command", { plainText, outputPath }),
+  read_file_raw: (path: string) => invoke<string>("read_file_raw", { path }),
+  save_file_raw: (path: string, content: string) => invoke<void>("save_file_raw", { path, content }),
+  get_config_cfg_path: () => invoke<string>("get_config_cfg_path_cmd"),
 
   // Hardware / Disk
   detect_hardware: () => invoke<HardwareInfo>("detect_hardware"),
@@ -262,8 +274,11 @@ export const realTauri = {
 
   // Game log
   read_game_log: () => invoke<string>("read_game_log"),
+  read_game_crash_log: (gamePath: string) => invoke<string>("read_game_crash_log", { gamePath }),
   read_app_crash_log: () => invoke<string>("read_app_crash_log"),
   read_install_log: () => invoke<string>("read_install_log"),
+  clear_install_log: () => invoke<void>("clear_install_log"),
+  read_launcher_log: () => invoke<string>("cmd_read_launcher_log"),
 
   // Install engine
   install_start: (url: string, dest: string) => invoke<InstallSession>("install_start", { url, dest }),
@@ -275,12 +290,10 @@ export const realTauri = {
   // Debug
   debug_profile_paths: () => invoke<{ docs: string; docs_exists: boolean; ets2_profiles: string; profiles_exists: boolean; ets2_mods: string; mods_exists: boolean; error: string | null }>("debug_profile_paths"),
 
-  debug_read_profile: (profilePath: string) => invoke<any>("debug_read_profile", { profilePath }),
-
   // Download engine
   download_with_progress: (download_url: string, file_dest: string, github_token?: string, asset_updated_at?: string, file_name?: string) =>
     invoke("download_with_progress", { download_url, file_dest, github_token, asset_updated_at, file_name }),
-  log_to_file: (message: string) => invoke("log_to_file", { message }),
+  log_install: (message: string) => invoke("log_install", { message }),
   set_download_paused: (paused: boolean) => invoke("set_download_paused", { paused }),
   set_download_cancelled: (cancelled: boolean) => invoke("set_download_cancelled", { cancelled }),
   set_download_skip: () => invoke("set_download_skip"),
@@ -320,13 +333,16 @@ export const realTauri = {
     invoke<string>("fix_mod_order", { user_sii_path, build_type }),
   reset_manifest: () => invoke<boolean>("reset_manifest"),
 
-  // Manifest
-  load_manifest: () => invoke<Record<string, any>>("cmd_load_manifest"),
-  save_manifest: (manifest: Record<string, any>) => invoke<void>("cmd_save_manifest", { manifest }),
-
   // GitHub assets
   list_github_release_assets: (owner: string, repo: string, tag: string, token?: string) =>
     invoke<GitHubAsset[]>("list_github_release_assets", { owner, repo, tag, token }),
+
+  // Updater
+  check_launcher_update: () => invoke<LauncherUpdateInfo>("check_launcher_update"),
+  download_and_run_update: (url: string) => invoke<void>("download_and_run_update", { url }),
+
+  // App
+  exit_app: () => invoke<void>("exit_app"),
 };
 
 /* === Event subscription (no-op in browser) === */
@@ -360,6 +376,7 @@ export type GitHubRelease = {
 };
 
 export type TokenValidation = { valid: boolean; rate_limit: number; scopes: string[] };
+export type LauncherUpdateInfo = { available: boolean; version?: string; current_version?: string; url?: string; notes?: string };
 export type DlcInfo = { id: string; name: string; installed: boolean };
 
 export type ProfileInfo = {
@@ -372,6 +389,7 @@ export type ProfileInfo = {
   lastModified: string;
   modsCount: number;
   siiPath: string;
+  configPath?: string;
 };
 
 export type HardwareInfo = {
