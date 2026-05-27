@@ -1,5 +1,5 @@
 {
     "version": "1.1.0",
     "url": "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/launcher/nexusV2_1.1.0_x64-setup.exe",
-    "notes": "Fix: large file download hang on HTTP/2 adaptive window. Fixed by increasing window size to 10MB and adding per-file timeout."
+    "notes": "Fix: large file download hang on HTTP/2 adaptive window. Fixed by increasing HTTP/2 window size to 10MB and adding per-file timeout."
 }
