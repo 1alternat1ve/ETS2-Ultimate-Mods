@@ -1,5 +1,5 @@
 {
-    "version": "1.1.2",
+    "version": "1.1.1",
     "url": "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/launcher/nexusV2_1.1.1_x64-setup.exe",
-    "notes": "Тест уведомления обновления"
+    "notes": "Пофиксил зависание при скачивании больших файлов. Теперь лаунчер сам чистит partial-файлы перед скачиванием."
 }
