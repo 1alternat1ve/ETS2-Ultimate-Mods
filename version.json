@@ -1,5 +1,5 @@
 {
-    "version": "1.1.1",
-    "url": "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/launcher/nexusV2_1.1.1_x64-setup.exe",
-    "notes": "Пофиксил зависание при скачивании"
+    "version": "1.2.0",
+    "url": "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/launcher/nexusV2_1.2.0_x64-setup.exe",
+    "notes": "Добавлен прогресс распаковки. Пофикшены баги."
 }
