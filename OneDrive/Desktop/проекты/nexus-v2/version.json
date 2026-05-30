@@ -1,5 +1,5 @@
 {
-    "version": "1.2.1",
-    "url": "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/launcher/nexusV2_1.2.1_x64-setup.exe",
-    "notes": "Фикс установки: txt и CargoFix больше не попадают в папку модов. DLC распаковывается корректно — все файлы из архива кладутся в папку игры."
+    "version": "1.3.0",
+    "url": "https://github.com/1alternat1ve/ETS2-Ultimate-Mods/releases/download/launcher/nexusV2_1.3.0_x64-setup.exe",
+    "notes": "1.3.0"
 }
